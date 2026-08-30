@@ -33,6 +33,7 @@ import {
 import { coveStore } from "@/domains/store/persistent-store";
 import { useTenant } from "@/components/layout/TenantProvider";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
+import { OfficialLetterModal } from "@/components/documents/OfficialLetterModal";
 
 interface ClaimDetailDrawerProps {
   claimId: string | null;
@@ -48,6 +49,7 @@ export function ClaimDetailDrawer({ claimId, onClose }: ClaimDetailDrawerProps) 
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [showRecertifyModal, setShowRecertifyModal] = useState(false);
   const [showDocModal, setShowDocModal] = useState(false);
+  const [showLetterModal, setShowLetterModal] = useState(false);
   const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
   const [showGeotagModal, setShowGeotagModal] = useState(false);
   const [selectedDocForView, setSelectedDocForView] = useState<DocumentItem | null>(null);
@@ -175,6 +177,15 @@ export function ClaimDetailDrawer({ claimId, onClose }: ClaimDetailDrawerProps) 
               >
                 <FileText className="h-3.5 w-3.5 text-purple-700" />
                 <span>{language === "id" ? "Cetak BAP & Kuitansi" : "Print BAP & Receipt"}</span>
+              </Button>
+              <Button
+                onClick={() => setShowLetterModal(true)}
+                variant="outline"
+                size="sm"
+                className="text-xs font-semibold h-8 text-blue-950 border-blue-300 bg-blue-50/80 hover:bg-blue-100 gap-1"
+              >
+                <FileText className="h-3.5 w-3.5 text-blue-700" />
+                <span>{language === "id" ? "Surat Resmi" : "Legal Letter"}</span>
               </Button>
               <Button
                 onClick={() => setShowWhatsAppModal(true)}
@@ -513,6 +524,14 @@ export function ClaimDetailDrawer({ claimId, onClose }: ClaimDetailDrawerProps) 
       <DocumentPreviewModal
         open={showDocModal}
         onOpenChange={setShowDocModal}
+        claimId={claim.id}
+        projectId={claim.projectId}
+      />
+
+      {/* Official Legal Letter Generator Modal */}
+      <OfficialLetterModal
+        open={showLetterModal}
+        onOpenChange={setShowLetterModal}
         claimId={claim.id}
         projectId={claim.projectId}
       />

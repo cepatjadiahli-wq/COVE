@@ -12,6 +12,7 @@ import { StageBadge } from "@/components/shared/StageBadge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { VariationOrderModal } from "@/components/projects/VariationOrderModal";
+import { OfficialLetterModal } from "@/components/documents/OfficialLetterModal";
 import {
   ArrowLeft,
   AlertTriangle,
@@ -26,6 +27,7 @@ export default function ProjectDetailPage() {
   const params = useParams();
   const { t, language } = useLanguage();
   const [showVoModal, setShowVoModal] = useState(false);
+  const [showLetterModal, setShowLetterModal] = useState(false);
   const projectId = params.id as string;
 
   const project = coveStore.projects.find((p) => p.id === projectId) || coveStore.projects[0];
@@ -73,6 +75,15 @@ export default function ProjectDetailPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              onClick={() => setShowLetterModal(true)}
+              variant="outline"
+              size="sm"
+              className="text-xs font-semibold gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50"
+            >
+              <FileText className="h-4 w-4 text-blue-600" />
+              <span>{language === "id" ? "Buat Surat Resmi" : "Official Letter"}</span>
+            </Button>
             <Link href="/progress-to-cash">
               <Button size="sm" className="bg-slate-900 text-white font-semibold text-xs gap-1.5">
                 <Plus className="h-4 w-4" />
@@ -444,6 +455,13 @@ export default function ProjectDetailPage() {
       <VariationOrderModal
         open={showVoModal}
         onOpenChange={setShowVoModal}
+        projectId={project.id}
+      />
+
+      {/* Official Legal Letter Generator Modal */}
+      <OfficialLetterModal
+        open={showLetterModal}
+        onOpenChange={setShowLetterModal}
         projectId={project.id}
       />
     </div>
