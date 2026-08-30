@@ -325,6 +325,8 @@ export default function ProjectDetailPage() {
               ))}
             </div>
           </div>
+        </TabsContent>
+
         {/* 6. ADDENDUM & VARIATION ORDERS TAB */}
         <TabsContent value="addendum" className="mt-4">
           <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-2xs space-y-6">

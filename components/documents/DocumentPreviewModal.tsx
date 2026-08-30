@@ -208,7 +208,7 @@ export function DocumentPreviewModal({
                 projectName: project.projectName,
                 projectCode: project.projectCode,
                 location: project.location,
-                clientName: client?.clientName || "PT Husada Medika Sejahtera",
+                clientName: client?.name || client?.legalName || "PT Husada Medika Sejahtera",
                 consultantName: "PT Bina Karya Konsultan (MK)",
               }}
               contract={{
@@ -238,7 +238,7 @@ export function DocumentPreviewModal({
                 bankAccountHolder: currentOrg.legalName,
               }}
               client={{
-                clientName: client?.clientName || "PT Husada Medika Sejahtera",
+                clientName: client?.name || client?.legalName || "PT Husada Medika Sejahtera",
               }}
               receiptNumber={`KUI/${new Date().getFullYear()}/${project.projectCode}/${claim.claimNumber}`}
               amount={breakdown.netPayableToContractor}
