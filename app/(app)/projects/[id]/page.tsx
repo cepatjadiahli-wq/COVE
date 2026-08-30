@@ -11,18 +11,21 @@ import { RiskBadge } from "@/components/shared/RiskBadge";
 import { StageBadge } from "@/components/shared/StageBadge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { VariationOrderModal } from "@/components/projects/VariationOrderModal";
 import {
   ArrowLeft,
   AlertTriangle,
   FileText,
   Clock,
   Plus,
+  FileSpreadsheet,
 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
 
 export default function ProjectDetailPage() {
   const params = useParams();
   const { t, language } = useLanguage();
+  const [showVoModal, setShowVoModal] = useState(false);
   const projectId = params.id as string;
 
   const project = coveStore.projects.find((p) => p.id === projectId) || coveStore.projects[0];
@@ -130,6 +133,7 @@ export default function ProjectDetailPage() {
         <TabsList className="bg-slate-100 p-1 border border-slate-200 rounded-lg">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="claims">Progress-to-Cash ({claims.length})</TabsTrigger>
+          <TabsTrigger value="addendum">{language === "id" ? "Addendum & VO" : "Addendums & VO"}</TabsTrigger>
           <TabsTrigger value="blockers">Blockers ({projectBlockers.length})</TabsTrigger>
           <TabsTrigger value="actions">Actions ({projectActions.length})</TabsTrigger>
           <TabsTrigger value="activity">{language === "id" ? "Riwayat Aktivitas" : "Activity Log"}</TabsTrigger>
@@ -321,8 +325,125 @@ export default function ProjectDetailPage() {
               ))}
             </div>
           </div>
+        {/* 6. ADDENDUM & VARIATION ORDERS TAB */}
+        <TabsContent value="addendum" className="mt-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-2xs space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+                  <h4 className="text-sm font-bold text-slate-900">
+                    {language === "id" ? "Buku Amandemen Kontrak & Variation Orders (VO / CCO)" : "Contract Addendums & Variation Orders"}
+                  </h4>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {language === "id" 
+                    ? "Kelola pekerjaan tambah/kurang dan perpanjangan waktu resmi agar seluruh nilai lapangan teragregasi ke penagihan" 
+                    : "Manage variation orders, change orders, and time extensions"}
+                </p>
+              </div>
+
+              <Button
+                onClick={() => setShowVoModal(true)}
+                size="sm"
+                className="bg-slate-900 text-white font-bold text-xs gap-1.5"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>{language === "id" ? "Catat Addendum / VO Baru" : "New Variation Order"}</span>
+              </Button>
+            </div>
+
+            {/* Contract Value Bridge */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase block">Nilai Kontrak Awal (Original SPK)</span>
+                <span className="text-lg font-black font-mono text-slate-800 mt-1 block">
+                  {formatIDR(contract?.originalContractValue || contractValue)}
+                </span>
+              </div>
+              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200">
+                <span className="text-[11px] text-emerald-800 font-semibold uppercase block">Total Penyesuaian Addendum</span>
+                <span className="text-lg font-black font-mono text-emerald-700 mt-1 block">
+                  + {formatIDR(Math.max(0, contractValue - (contract?.originalContractValue || contractValue)))}
+                </span>
+              </div>
+              <div className="p-4 rounded-xl bg-slate-900 text-white">
+                <span className="text-[11px] text-slate-300 font-semibold uppercase block">Nilai Kontrak Terkini (Current Total)</span>
+                <span className="text-lg font-black font-mono text-emerald-400 mt-1 block">
+                  {formatIDR(contractValue)}
+                </span>
+              </div>
+            </div>
+
+            {/* List of Addendums / Variation Orders */}
+            <div className="border border-slate-200 rounded-lg overflow-hidden text-xs">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold uppercase text-slate-500">
+                    <th className="py-3 px-4">No. Addendum / VO</th>
+                    <th className="py-3 px-4">Uraian Perubahan</th>
+                    <th className="py-3 px-4">Kategori</th>
+                    <th className="py-3 px-4 text-right">Nilai Perubahan (IDR)</th>
+                    <th className="py-3 px-4 text-center">Waktu (EOT)</th>
+                    <th className="py-3 px-4 text-center">Status MK</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  <tr className="hover:bg-slate-50">
+                    <td className="py-3 px-4 font-mono font-bold text-slate-900">ADD-01-{project.projectCode}</td>
+                    <td className="py-3 px-4 max-w-[280px]">
+                      <div className="font-bold text-slate-900">Pekerjaan Tambah Struktur Ramp Basement & Dinding Penahan</div>
+                      <div className="text-[11px] text-slate-500">Instruksi Lapangan MK No. SI-042</div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="bg-blue-50 text-blue-800 font-bold px-2 py-0.5 rounded text-[10px]">
+                        Pekerjaan Tambah
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 font-mono font-bold text-emerald-700 text-right">
+                      + Rp 850.000.000
+                    </td>
+                    <td className="py-3 px-4 text-center font-mono font-semibold">+14 hari</td>
+                    <td className="py-3 px-4 text-center">
+                      <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded text-[10px] uppercase">
+                        Disetujui
+                      </span>
+                    </td>
+                  </tr>
+                  <tr className="hover:bg-slate-50">
+                    <td className="py-3 px-4 font-mono font-bold text-slate-900">SPK-UTAMA-{project.projectCode}</td>
+                    <td className="py-3 px-4">
+                      <div className="font-bold text-slate-900">{contract?.contractTitle || "Kontrak Utama Konstruksi"}</div>
+                      <div className="text-[11px] text-slate-500">Dokumen Kontrak Induk</div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded text-[10px]">
+                        Kontrak Utama
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 font-mono font-bold text-slate-900 text-right">
+                      {formatIDR(contract?.originalContractValue || 32000000000)}
+                    </td>
+                    <td className="py-3 px-4 text-center font-mono font-semibold">-</td>
+                    <td className="py-3 px-4 text-center">
+                      <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded text-[10px] uppercase">
+                        Aktif
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </TabsContent>
       </Tabs>
+
+      {/* Variation Order / Addendum Modal */}
+      <VariationOrderModal
+        open={showVoModal}
+        onOpenChange={setShowVoModal}
+        projectId={project.id}
+      />
     </div>
   );
 }

@@ -9,6 +9,9 @@ import { MoneyPipeline } from "@/components/dashboard/MoneyPipeline";
 import { TopActionsCard } from "@/components/dashboard/TopActionsCard";
 import { ProjectsAttentionCard } from "@/components/dashboard/ProjectsAttentionCard";
 import { CollectionForecastCard } from "@/components/dashboard/CollectionForecastCard";
+import { CScoreCard } from "@/components/dashboard/CScoreCard";
+import { CashStressSimulatorModal } from "@/components/finance/CashStressSimulatorModal";
+import { calculateContractorCScore } from "@/lib/finance/c-score";
 import { Plus, Upload, ShieldAlert, Clock, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
@@ -16,8 +19,10 @@ import { useLanguage } from "@/lib/i18n/LanguageContext";
 export default function DashboardPage() {
   const { currentOrg } = useTenant();
   const { t, language } = useLanguage();
+  const [showSimulator, setShowSimulator] = React.useState(false);
   const kpis = coveStore.getDashboardKpis();
   const pipeline = coveStore.getMoneyPipeline();
+  const cScore = calculateContractorCScore(coveStore.claims);
 
   return (
     <div className="space-y-8 animate-in fade-in-0 duration-300">
@@ -107,6 +112,9 @@ export default function DashboardPage() {
       {/* Money Pipeline Visual */}
       <MoneyPipeline pipeline={pipeline} />
 
+      {/* Contractor Economic Health Scorecard (C-Score) & Stress-Test */}
+      <CScoreCard cScore={cScore} onOpenSimulator={() => setShowSimulator(true)} />
+
       {/* Top Actions Today Table */}
       <TopActionsCard />
 
@@ -115,6 +123,12 @@ export default function DashboardPage() {
 
       {/* Collection Forecast Windows */}
       <CollectionForecastCard />
+
+      {/* Interactive Cash Flow Stress-Test Simulator Modal */}
+      <CashStressSimulatorModal
+        open={showSimulator}
+        onOpenChange={setShowSimulator}
+      />
     </div>
   );
 }

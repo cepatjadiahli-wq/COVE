@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   Rocket,
   Compass,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTenant } from "./TenantProvider";
@@ -30,6 +31,7 @@ export function Sidebar() {
     { label: t("nav.command_center", "Pusat Kendali"), href: "/dashboard", icon: LayoutDashboard },
     { label: t("nav.projects", "Proyek"), href: "/projects", icon: Building2 },
     { label: t("nav.progress_to_cash", "Progres ke Kas"), href: "/progress-to-cash", icon: TrendingUp },
+    { label: t("nav.subcontractors", "Kontrol Mandor & Subkon"), href: "/subcontractors", icon: Users },
     { label: t("nav.actions", "Daftar Tindakan"), href: "/actions", icon: CheckSquare },
     { label: t("nav.reports", "Laporan"), href: "/reports", icon: BarChart3 },
     { label: t("nav.data_imports", "Data & Impor"), href: "/data", icon: Database },

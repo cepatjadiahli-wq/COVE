@@ -7,7 +7,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { CheckCircle2, Plus } from "lucide-react";
+import { CheckCircle2, Plus, MessageSquare } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
 
 export default function SettingsPage() {
@@ -24,6 +24,17 @@ export default function SettingsPage() {
     { stage: "Faktur Diterbitkan", warning: 3, risk: 7, critical: 10 },
     { stage: "Jatuh Tempo Pembayaran", warning: 3, risk: 7, critical: 14 },
   ]);
+
+  // WhatsApp Gateway State
+  const [waConfig, setWaConfig] = useState({
+    provider: "fonnte",
+    senderPhone: "081299881122",
+    apiToken: "fonnte_live_tok_991283",
+    slaAlerts: true,
+    bapApproved: true,
+    cashReceipt: true,
+    dailyBrief: true,
+  });
 
   // Feature Flags State
   const [flags] = useState({
@@ -64,6 +75,7 @@ export default function SettingsPage() {
           <TabsTrigger value="org">{language === "id" ? "Profil Organisasi" : "Organization Profile"}</TabsTrigger>
           <TabsTrigger value="members">{language === "id" ? `Anggota & Peran (${allProfiles.length})` : `Members & Roles (${allProfiles.length})`}</TabsTrigger>
           <TabsTrigger value="sla">{language === "id" ? "Aturan Batas SLA" : "Stage SLA Rules"}</TabsTrigger>
+          <TabsTrigger value="whatsapp">{language === "id" ? "WhatsApp Gateway" : "WhatsApp Gateway"}</TabsTrigger>
           <TabsTrigger value="flags">{language === "id" ? "Fitur Tambahan" : "Feature Flags"}</TabsTrigger>
         </TabsList>
 
@@ -197,7 +209,142 @@ export default function SettingsPage() {
           </div>
         </TabsContent>
 
-        {/* 4. FEATURE FLAGS TAB */}
+        {/* 4. WHATSAPP GATEWAY TAB */}
+        <TabsContent value="whatsapp" className="mt-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-6">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-white">
+                  <MessageSquare className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {language === "id" ? "Konfigurasi WhatsApp Gateway & Notifikasi Otomatis" : "WhatsApp Gateway & Automated Alerts"}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {language === "id"
+                      ? "Kirim notifikasi peringatan blocker, BAP disahkan, dan penerimaan kas otomatis ke nomor HP manajemen"
+                      : "Configure automated WhatsApp messaging for SLA alerts and cash confirmations"}
+                  </p>
+                </div>
+              </div>
+
+              <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold px-2.5 py-1 rounded text-xs">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                <span>Gateway Aktif (Simulation / Direct wa.me)</span>
+              </span>
+            </div>
+
+            <form onSubmit={handleSave} className="space-y-4 text-xs max-w-2xl">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="wapprov">Penyedia Layanan (WhatsApp Provider)</Label>
+                  <select
+                    id="wapprov"
+                    value={waConfig.provider}
+                    onChange={(e) => setWaConfig({ ...waConfig, provider: e.target.value })}
+                    className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-xs"
+                  >
+                    <option value="fonnte">Fonnte Indonesia (Rekomendasi)</option>
+                    <option value="wati">WATI.io Official API</option>
+                    <option value="wablas">Wablas Gateway</option>
+                    <option value="direct">Direct Web / Mobile (wa.me)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <Label htmlFor="wasender">Nomor WhatsApp Pengirim Resmi (Sender Number)</Label>
+                  <Input
+                    id="wasender"
+                    value={waConfig.senderPhone}
+                    onChange={(e) => setWaConfig({ ...waConfig, senderPhone: e.target.value })}
+                    className="mt-1 font-mono font-bold"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <Label htmlFor="watok">API Secret Token / Key</Label>
+                <Input
+                  id="watok"
+                  type="password"
+                  value={waConfig.apiToken}
+                  onChange={(e) => setWaConfig({ ...waConfig, apiToken: e.target.value })}
+                  className="mt-1 font-mono"
+                />
+              </div>
+
+              {/* Notification Trigger Toggles */}
+              <div className="border-t border-slate-200 pt-4 space-y-3">
+                <h4 className="font-bold text-slate-900 text-xs">
+                  {language === "id" ? "Pemicu Notifikasi WhatsApp Otomatis:" : "Automated WhatsApp Triggers:"}
+                </h4>
+
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-slate-50 border border-slate-100">
+                    <input
+                      type="checkbox"
+                      checked={waConfig.slaAlerts}
+                      onChange={(e) => setWaConfig({ ...waConfig, slaAlerts: e.target.checked })}
+                      className="rounded text-emerald-600 focus:ring-emerald-500 h-4 w-4"
+                    />
+                    <div>
+                      <span className="font-bold text-slate-900 block">⚠️ Peringatan Kritis SLA Blocker</span>
+                      <span className="text-[11px] text-slate-500">Kirim peringatan jika klaim tertahan di konsultan MK melebihi batas waktu SLA</span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-slate-50 border border-slate-100">
+                    <input
+                      type="checkbox"
+                      checked={waConfig.bapApproved}
+                      onChange={(e) => setWaConfig({ ...waConfig, bapApproved: e.target.checked })}
+                      className="rounded text-emerald-600 focus:ring-emerald-500 h-4 w-4"
+                    />
+                    <div>
+                      <span className="font-bold text-slate-900 block">✅ Notifikasi BAP Disetujui MK & Owner</span>
+                      <span className="text-[11px] text-slate-500">Kirim pemberitahuan kepada tim keuangan untuk segera menerbitkan Faktur Pajak</span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-slate-50 border border-slate-100">
+                    <input
+                      type="checkbox"
+                      checked={waConfig.cashReceipt}
+                      onChange={(e) => setWaConfig({ ...waConfig, cashReceipt: e.target.checked })}
+                      className="rounded text-emerald-600 focus:ring-emerald-500 h-4 w-4"
+                    />
+                    <div>
+                      <span className="font-bold text-slate-900 block">💰 Notifikasi Kas Cair / Pelunasan di Bank</span>
+                      <span className="text-[11px] text-slate-500">Kirim konfirmasi saat transfer bank dari owner berhasil direkonsiliasi</span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-slate-50 border border-slate-100">
+                    <input
+                      type="checkbox"
+                      checked={waConfig.dailyBrief}
+                      onChange={(e) => setWaConfig({ ...waConfig, dailyBrief: e.target.checked })}
+                      className="rounded text-emerald-600 focus:ring-emerald-500 h-4 w-4"
+                    />
+                    <div>
+                      <span className="font-bold text-slate-900 block">☀️ Executive Daily Morning Brief (08:00 WIB)</span>
+                      <span className="text-[11px] text-slate-500">Ringkasan harian total Cash-at-Risk dan tindakan prioritas hari ini ke WhatsApp Direktur</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <Button type="submit" className="bg-slate-900 text-white font-bold">
+                  {language === "id" ? "Simpan Konfigurasi WhatsApp" : "Save WhatsApp Settings"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </TabsContent>
+
+        {/* 5. FEATURE FLAGS TAB */}
         <TabsContent value="flags" className="mt-4">
           <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
             <div>

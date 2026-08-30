@@ -11,6 +11,10 @@ import { StageTransitionModal } from "@/components/claims/StageTransitionModal";
 import { BlockerModal } from "@/components/blockers/BlockerModal";
 import { InvoiceModal } from "@/components/invoices/InvoiceModal";
 import { CashReceiptModal } from "@/components/invoices/CashReceiptModal";
+import { DocumentPreviewModal } from "@/components/documents/DocumentPreviewModal";
+import { WhatsAppDispatchModal } from "@/components/notifications/WhatsAppDispatchModal";
+import { GeotagPhotoUploader } from "@/components/evidence/GeotagPhotoUploader";
+import { SmartDocumentViewer, DocumentItem } from "@/components/evidence/SmartDocumentViewer";
 import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +26,9 @@ import {
   Plus,
   ShieldAlert,
   Edit3,
+  FileText,
+  MessageSquare,
+  Camera,
 } from "lucide-react";
 import { coveStore } from "@/domains/store/persistent-store";
 import { useTenant } from "@/components/layout/TenantProvider";
@@ -40,6 +47,10 @@ export function ClaimDetailDrawer({ claimId, onClose }: ClaimDetailDrawerProps) 
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [showRecertifyModal, setShowRecertifyModal] = useState(false);
+  const [showDocModal, setShowDocModal] = useState(false);
+  const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
+  const [showGeotagModal, setShowGeotagModal] = useState(false);
+  const [selectedDocForView, setSelectedDocForView] = useState<DocumentItem | null>(null);
   const [newCertifiedValue, setNewCertifiedValue] = useState(0);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>("");
 
@@ -155,6 +166,33 @@ export function ClaimDetailDrawer({ claimId, onClose }: ClaimDetailDrawerProps) 
               >
                 <Receipt className="h-3.5 w-3.5" />
                 <span>{language === "id" ? "Terbitkan Faktur" : "Issue Invoice"}</span>
+              </Button>
+              <Button
+                onClick={() => setShowDocModal(true)}
+                variant="outline"
+                size="sm"
+                className="text-xs font-semibold h-8 text-purple-900 border-purple-300 bg-purple-50 hover:bg-purple-100 gap-1"
+              >
+                <FileText className="h-3.5 w-3.5 text-purple-700" />
+                <span>{language === "id" ? "Cetak BAP & Kuitansi" : "Print BAP & Receipt"}</span>
+              </Button>
+              <Button
+                onClick={() => setShowWhatsAppModal(true)}
+                variant="outline"
+                size="sm"
+                className="text-xs font-semibold h-8 text-emerald-900 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 gap-1"
+              >
+                <MessageSquare className="h-3.5 w-3.5 text-emerald-600" />
+                <span>{language === "id" ? "Kirim WA" : "Dispatch WA"}</span>
+              </Button>
+              <Button
+                onClick={() => setShowGeotagModal(true)}
+                variant="outline"
+                size="sm"
+                className="text-xs font-semibold h-8 text-teal-900 border-teal-300 bg-teal-50 hover:bg-teal-100 gap-1"
+              >
+                <Camera className="h-3.5 w-3.5 text-teal-600" />
+                <span>{language === "id" ? "Foto Geotag" : "Geotag Photo"}</span>
               </Button>
             </div>
           </div>
@@ -470,6 +508,43 @@ export function ClaimDetailDrawer({ claimId, onClose }: ClaimDetailDrawerProps) 
           </DialogFooter>
         </form>
       </Dialog>
+
+      {/* Official BAP & Receipt Printable Document Modal */}
+      <DocumentPreviewModal
+        open={showDocModal}
+        onOpenChange={setShowDocModal}
+        claimId={claim.id}
+        projectId={claim.projectId}
+      />
+
+      {/* WhatsApp Dispatcher Modal */}
+      <WhatsAppDispatchModal
+        open={showWhatsAppModal}
+        onOpenChange={setShowWhatsAppModal}
+        defaultPayload={{
+          projectName: project?.projectName,
+          claimNumber: claim.claimNumber,
+          amount: risk.totalCashAtRisk > 0 ? risk.totalCashAtRisk : claim.claimedValue,
+          agingDays,
+          blockerTitle: claimBlockers[0]?.title || "Persetujuan volume fisik belum disahkan MK",
+          messageType: claim.currentStage.includes("CERTIFIED") || claim.certifiedValue > 0 ? "BAP_APPROVED" : "SLA_ALERT",
+        }}
+      />
+
+      {/* Geotagged Field Photo Uploader Modal */}
+      <GeotagPhotoUploader
+        open={showGeotagModal}
+        onOpenChange={setShowGeotagModal}
+        claimId={claim.id}
+        projectId={claim.projectId}
+      />
+
+      {/* In-App Smart Document & Photo Viewer */}
+      <SmartDocumentViewer
+        open={Boolean(selectedDocForView)}
+        onOpenChange={(op) => !op && setSelectedDocForView(null)}
+        document={selectedDocForView}
+      />
     </div>
   );
 }

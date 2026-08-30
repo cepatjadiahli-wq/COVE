@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, CheckCircle2 } from "lucide-react";
+import { Plus, CheckCircle2, MessageSquare } from "lucide-react";
+import { WhatsAppDispatchModal } from "@/components/notifications/WhatsAppDispatchModal";
 import { coveStore } from "@/domains/store/persistent-store";
 import { useTenant } from "@/components/layout/TenantProvider";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
@@ -23,6 +24,7 @@ export default function ActionsPage() {
 
   // Resolve Modal State
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
+  const [selectedActionForWa, setSelectedActionForWa] = useState<any>(null);
   const [resolution, setResolution] = useState("");
   const [outcomeType, setOutcomeType] = useState<OutcomeType>("cash_released");
   const [outcomeValue, setOutcomeValue] = useState(650000000);
@@ -241,23 +243,34 @@ export default function ActionsPage() {
                       </td>
 
                       <td className="py-3.5 px-4 text-right">
-                        {act.status !== "resolved" ? (
+                        <div className="flex items-center justify-end gap-1.5">
                           <Button
-                            onClick={() => {
-                              setSelectedActionId(act.id);
-                              setOutcomeValue(act.financialExposure);
-                              setShowResolveModal(true);
-                            }}
+                            onClick={() => setSelectedActionForWa(act)}
                             variant="outline"
                             size="sm"
-                            className="h-8 text-xs font-semibold text-emerald-800 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 gap-1"
+                            className="h-8 text-xs font-semibold text-emerald-800 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 px-2"
+                            title="Kirim WA Penugasan ke PIC"
                           >
-                            <CheckCircle2 className="h-3.5 w-3.5" />
-                            <span>{language === "id" ? "Selesaikan" : "Resolve Action"}</span>
+                            <MessageSquare className="h-3.5 w-3.5 text-emerald-600" />
                           </Button>
-                        ) : (
-                          <span className="text-xs text-slate-400 font-medium">{language === "id" ? "Selesai" : "Resolved"}</span>
-                        )}
+                          {act.status !== "resolved" ? (
+                            <Button
+                              onClick={() => {
+                                setSelectedActionId(act.id);
+                                setOutcomeValue(act.financialExposure);
+                                setShowResolveModal(true);
+                              }}
+                              variant="outline"
+                              size="sm"
+                              className="h-8 text-xs font-semibold text-emerald-800 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 gap-1"
+                            >
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              <span>{language === "id" ? "Selesaikan" : "Resolve Action"}</span>
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-slate-400 font-medium">{language === "id" ? "Selesai" : "Resolved"}</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -425,6 +438,24 @@ export default function ActionsPage() {
           </DialogFooter>
         </form>
       </Dialog>
+
+      {/* Direct WhatsApp Action Dispatcher Modal */}
+      {selectedActionForWa && (
+        <WhatsAppDispatchModal
+          open={Boolean(selectedActionForWa)}
+          onOpenChange={(op) => !op && setSelectedActionForWa(null)}
+          defaultPayload={{
+            projectName: coveStore.projects.find((p) => p.id === selectedActionForWa.projectId)?.projectName || "Proyek Konstruksi",
+            recipientName: coveStore.profiles.find((p) => p.id === selectedActionForWa.ownerId)?.fullName || "Tim Lapangan",
+            recipientRole: coveStore.profiles.find((p) => p.id === selectedActionForWa.ownerId)?.jobTitle || "PIC",
+            recipientPhone: coveStore.profiles.find((p) => p.id === selectedActionForWa.ownerId)?.phone || "081288991122",
+            actionTitle: selectedActionForWa.title,
+            amount: selectedActionForWa.financialExposure,
+            dueDate: selectedActionForWa.dueDate,
+            messageType: "ACTION_ASSIGNED",
+          }}
+        />
+      )}
     </div>
   );
 }

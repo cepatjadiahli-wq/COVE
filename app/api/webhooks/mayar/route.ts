@@ -84,6 +84,34 @@ export async function POST(req: NextRequest) {
 
         // Record in Supabase database if connected
         try {
+          // Detect subscription tier from amount
+          let activatedTier = "monthly_129k";
+          let expirationDays = 30;
+
+          if (paymentAmount >= 750000) {
+            activatedTier = "lifetime_799k";
+            expirationDays = 36500; // Lifetime 100 years
+          } else if (paymentAmount >= 450000) {
+            activatedTier = "annual_499k";
+            expirationDays = 365;
+          }
+
+          // Update organization subscription in Supabase
+          if (customerEmail) {
+            const expirationDate = new Date();
+            expirationDate.setDate(expirationDate.getDate() + expirationDays);
+
+            await supabase
+              .from("organizations")
+              .update({
+                subscription_tier: activatedTier,
+                subscription_status: "active",
+                subscription_expires_at: activatedTier === "lifetime_799k" ? null : expirationDate.toISOString(),
+                updated_at: new Date().toISOString(),
+              })
+              .eq("legal_name", data.customer?.name || "");
+          }
+
           await supabase.from("mayar_transactions").insert({
             event_id: `${event}_${data.id}_${Date.now()}`,
             event_type: event,
@@ -110,17 +138,22 @@ export async function POST(req: NextRequest) {
       case "subscription.paid": {
         console.log(`⭐ [Mayar Webhook] Tenant subscription activated for customer: ${data.customer?.email}`);
 
+        let activatedTier = "monthly_129k";
+        const amount = Number(data.amount) || 0;
+        if (amount >= 750000) activatedTier = "lifetime_799k";
+        else if (amount >= 450000) activatedTier = "annual_499k";
+
         // Try updating organization subscription in Supabase
         if (data.customer?.email) {
           try {
             await supabase
               .from("organizations")
               .update({
-                subscription_tier: "portfolio_pro",
+                subscription_tier: activatedTier,
                 subscription_status: "active",
                 updated_at: new Date().toISOString(),
               })
-              .eq("legal_name", data.customer.name || "");
+              .eq("legal_name", data.customer?.name || "");
           } catch (subErr) {
             console.warn("Notice: Subscription status updated in memory.", subErr);
           }
