@@ -36,9 +36,9 @@ export default function HomePage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const displayTiers: SubscriptionTier[] = [
-    SUBSCRIPTION_TIERS.monthly_129k,
-    SUBSCRIPTION_TIERS.annual_499k,
-    SUBSCRIPTION_TIERS.lifetime_799k,
+    SUBSCRIPTION_TIERS.b2b_pilot,
+    SUBSCRIPTION_TIERS.b2b_core,
+    SUBSCRIPTION_TIERS.b2b_scale,
   ];
 
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
@@ -202,17 +202,18 @@ export default function HomePage() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
             {displayTiers.map((tier) => {
-              const isAnnual = tier.id === "annual_499k";
-              const isLifetime = tier.id === "lifetime_799k";
+              const isPilot = tier.id === "b2b_pilot";
+              const isCore = tier.id === "b2b_core";
+              const isScale = tier.id === "b2b_scale";
 
               return (
                 <div
                   key={tier.id}
                   className={`relative flex flex-col justify-between rounded-2xl p-6 sm:p-8 transition-all duration-200 ${
-                    isLifetime
-                      ? "bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 border-2 border-amber-500/80 shadow-2xl shadow-amber-500/10 scale-102"
-                      : isAnnual
-                      ? "bg-slate-900/95 border-2 border-emerald-500/80 shadow-xl shadow-emerald-500/10"
+                    isCore
+                      ? "bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 border-2 border-emerald-500/80 shadow-2xl shadow-emerald-500/10 scale-102"
+                      : isPilot
+                      ? "bg-slate-900/95 border-2 border-amber-500/80 shadow-xl shadow-amber-500/10"
                       : "bg-slate-900/60 border border-slate-800"
                   }`}
                 >
@@ -221,10 +222,10 @@ export default function HomePage() {
                     <div className="absolute -top-3 left-1/2 -translate-x-1/2">
                       <span
                         className={`text-[11px] font-black uppercase px-3.5 py-1 rounded-full shadow-md ${
-                          isLifetime
-                            ? "bg-amber-500 text-slate-950"
-                            : isAnnual
+                          isCore
                             ? "bg-emerald-500 text-slate-950"
+                            : isPilot
+                            ? "bg-amber-500 text-slate-950"
                             : "bg-slate-800 text-slate-300 border border-slate-700"
                         }`}
                       >
@@ -237,10 +238,10 @@ export default function HomePage() {
                     {/* Header */}
                     <div className="space-y-2 mb-6">
                       <div className="flex items-center gap-2">
-                        {isLifetime ? (
-                          <Crown className="h-5 w-5 text-amber-400" />
-                        ) : isAnnual ? (
-                          <Sparkles className="h-5 w-5 text-emerald-400" />
+                        {isCore ? (
+                          <Crown className="h-5 w-5 text-emerald-400" />
+                        ) : isPilot ? (
+                          <Sparkles className="h-5 w-5 text-amber-400" />
                         ) : (
                           <Zap className="h-5 w-5 text-slate-400" />
                         )}
@@ -302,10 +303,10 @@ export default function HomePage() {
                         setErrorMsg(null);
                       }}
                       className={`w-full font-black text-xs sm:text-sm py-5 rounded-xl transition-all shadow-lg ${
-                        isLifetime
-                          ? "bg-amber-500 hover:bg-amber-400 text-slate-950"
-                          : isAnnual
+                        isCore
                           ? "bg-emerald-500 hover:bg-emerald-400 text-slate-950"
+                          : isPilot
+                          ? "bg-amber-500 hover:bg-amber-400 text-slate-950"
                           : "bg-slate-800 hover:bg-slate-700 text-white border border-slate-700"
                       }`}
                     >

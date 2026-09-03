@@ -23,17 +23,27 @@ import {
 
 export default function PricingPage() {
   const [selectedTier, setSelectedTier] = useState<SubscriptionTier | null>(null);
+  const [pricingCategory, setPricingCategory] = useState<"b2b" | "legacy">("b2b");
   const [customerName, setCustomerName] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const displayTiers: SubscriptionTier[] = [
+  const b2bTiers: SubscriptionTier[] = [
+    SUBSCRIPTION_TIERS.b2b_pilot,
+    SUBSCRIPTION_TIERS.b2b_core,
+    SUBSCRIPTION_TIERS.b2b_scale,
+    SUBSCRIPTION_TIERS.b2b_enterprise,
+  ];
+
+  const legacyTiers: SubscriptionTier[] = [
     SUBSCRIPTION_TIERS.monthly_129k,
     SUBSCRIPTION_TIERS.annual_499k,
     SUBSCRIPTION_TIERS.lifetime_799k,
   ];
+
+  const displayTiers = pricingCategory === "b2b" ? b2bTiers : legacyTiers;
 
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,7 +87,7 @@ export default function PricingPage() {
         <div className="text-center space-y-4">
           <div className="inline-flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1 rounded-full text-xs font-semibold text-emerald-400 shadow-inner">
             <ShieldCheck className="h-4 w-4" />
-            <span>Sistem Berlangganan Resmi COVE Construction SaaS</span>
+            <span>Sistem Lisensi Resmi COVE B2B Construction SaaS (PRD Bagian 28)</span>
           </div>
 
           <h1 className="text-3xl sm:text-5xl font-black tracking-tight text-white max-w-3xl mx-auto leading-tight">
@@ -85,12 +95,36 @@ export default function PricingPage() {
           </h1>
 
           <p className="text-sm sm:text-base text-slate-400 max-w-2xl mx-auto leading-relaxed">
-            Tidak ada mode coba-coba gratis. Pilih paket berlangganan berbayar sekarang dan kendalikan seluruh siklus pembayaran termin, pajak, mandor, dan persetujuan MK secara profesional.
+            Metrik penagihan resmi: <strong className="text-slate-200">Company Base + Active Project</strong> (bukan per-seat). Didukung program Concierge Paid Pilot 45 Hari dan hak ekspor penuh data historis (PRD 28.1).
           </p>
+
+          {/* Pricing Category Switcher */}
+          <div className="inline-flex p-1 rounded-xl bg-slate-900 border border-slate-800 mt-4">
+            <button
+              onClick={() => setPricingCategory("b2b")}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                pricingCategory === "b2b"
+                  ? "bg-emerald-600 text-white shadow-md"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Penawaran B2B Resmi (PRD Bagian 28)
+            </button>
+            <button
+              onClick={() => setPricingCategory("legacy")}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                pricingCategory === "legacy"
+                  ? "bg-slate-800 text-white shadow-md"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Paket Mandiri / Legacy
+            </button>
+          </div>
         </div>
 
-        {/* 3 Pricing Cards Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
+        {/* Pricing Cards Grid */}
+        <div className={`grid gap-6 items-stretch ${pricingCategory === "b2b" ? "grid-cols-1 md:grid-cols-2 lg:grid-cols-4" : "grid-cols-1 md:grid-cols-3"}`}>
           {displayTiers.map((tier) => {
             const isAnnual = tier.id === "annual_499k";
             const isLifetime = tier.id === "lifetime_799k";
@@ -249,9 +283,23 @@ export default function PricingPage() {
             </div>
 
             <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
-              <span className="font-bold text-white block">Apa keunggulan Paket Seumur Hidup (Rp 799.000)?</span>
+              <span className="font-bold text-white block">Bagaimana skema program Paid Pilot 45 Hari (PRD 23.1)?</span>
               <p className="text-slate-400 text-xs leading-relaxed">
-                Paket Seumur Hidup (*Lifetime Deal*) adalah paket satu kali bayar tanpa batas waktu dan tanpa batas proyek. Anda mendapatkan seluruh fitur canggih termasuk Kontrol Pay-When-Paid Mandor, Simulator Arus Kas 12 Minggu, dan bebas biaya selamanya.
+                Program Paid Pilot (Rp 10 Juta sekali bayar) mendampingi kontraktor selama 45 hari pada 1 proyek aktif, mencakup pendampingan intake data opname Excel, validasi profil aturan kontrak, minimal 4 weekly review bersama manajemen/direksi, dan penyerahan Pilot ROI Scorecard pada hari ke-45.
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
+              <span className="font-bold text-white block">Apakah ada paket Lifetime (Seumur Hidup)?</span>
+              <p className="text-slate-400 text-xs leading-relaxed">
+                Sesuai keputusan produk resmi PRD Bagian 28.1 dan 35, COVE <strong>tidak menawarkan paket seumur hidup (Lifetime Plan ditolak)</strong>. COVE beroperasi dengan model B2B langganan proyek aktif untuk menjamin keberlanjutan dukungan teknis rekayasa kontrak dan SLA keamanan enterprise.
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
+              <span className="font-bold text-white block">Bagaimana jaminan akses data jika langganan berakhir (PRD 28.1)?</span>
+              <p className="text-slate-400 text-xs leading-relaxed">
+                Sesuai aturan penagihan PRD 28.1, pembatasan lisensi <strong>tidak boleh menghapus akses export</strong> saat subscription berakhir. Pengguna selalu memiliki hak *read & export grace period* untuk mengunduh seluruh data historis kapan pun tanpa biaya tambahan.
               </p>
             </div>
           </div>

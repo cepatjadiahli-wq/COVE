@@ -6,8 +6,9 @@ import { coveStore } from "@/domains/store/persistent-store";
 import { useTenant } from "@/components/layout/TenantProvider";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
-import { Download } from "lucide-react";
+import { Download, Printer, FileSpreadsheet } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
+import { generateErpInvoiceReconciliationCsv } from "@/domains/platform/service";
 
 export default function ReportsPage() {
   const { currentOrg } = useTenant();
@@ -24,9 +25,23 @@ export default function ReportsPage() {
     { id: "expected_collection", name: language === "id" ? "6. Laporan Proyeksi Kas" : "6. Expected Collection Report", desc: language === "id" ? "Jadwal estimasi penerimaan kas 7h, 30h, 60h, 90h" : "Estimated cash collection windows 7d, 30d, 60d, 90d" },
     { id: "action_aging", name: language === "id" ? "7. Laporan Umur Tindakan" : "7. Action Aging Report", desc: language === "id" ? "Umur dan tingkat penyelesaian tindakan per PIC" : "Action aging and resolution rates by owner" },
     { id: "project_summary", name: language === "id" ? "8. Ringkasan Ekonomi Proyek" : "8. Project Economic Summary", desc: language === "id" ? "Ringkasan nilai kontrak, sertifikasi, penagihan, dan kas" : "Comprehensive contract, billing, and cash summary" },
+    { id: "weekly_pack", name: language === "id" ? "9. Weekly Review Pack (Direksi)" : "9. Weekly Review Pack (Board)", desc: language === "id" ? "Bundel evaluasi mingguan: ROI ledger, antrean handoff finance, dan komparasi pilot" : "Weekly board review bundle: ROI ledger, finance handoff queue, pilot comparison" },
+    { id: "erp_bridge", name: language === "id" ? "10. Jembatan CSV ERP / Accounting" : "10. ERP / Accounting CSV Bridge", desc: language === "id" ? "Rekonsiliasi faktur & penerimaan kas untuk impor ke SAP / Accurate / Jurnal" : "Invoice & cash receipt reconciliation for SAP / Accurate / Jurnal ERP" },
   ];
 
   const handleExportCSV = () => {
+    if (selectedReport === "erp_bridge") {
+      const csv = generateErpInvoiceReconciliationCsv(coveStore.invoices, coveStore.claims);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `COVE_ERP_Invoice_Bridge_${new Date().toISOString().split("T")[0]}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
+
     const data = coveStore.claims.map((c) => ({
       ClaimNumber: c.claimNumber,
       WorkPerformed: c.workPerformedValue,
@@ -63,17 +78,26 @@ export default function ReportsPage() {
               {language === "id" ? "Pusat Laporan Ekonomi" : "Economic Reports Center"}
             </h1>
             <span className="text-xs font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded border border-slate-200">
-              {language === "id" ? "8 Laporan Utama" : "8 Standard Reports"}
+              {language === "id" ? "10 Laporan Utama (PRD 19 & 20)" : "10 Standard Reports"}
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1">
             {language === "id" 
-              ? "Ekspor laporan keuangan dan analisis umur proses untuk pelaporan manajemen dan direksi" 
-              : "Export financial reports and aging analysis for management and board reporting"}
+              ? "Ekspor laporan keuangan, analisis umur proses, dan jembatan CSV ERP untuk pelaporan manajemen dan direksi" 
+              : "Export financial reports, aging analysis, and ERP CSV bridge for management and board reporting"}
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => window.print()}
+            className="border-slate-300 text-slate-700 font-semibold text-xs gap-1.5"
+          >
+            <Printer className="h-4 w-4" />
+            <span>Cetak / PDF (PRT-011)</span>
+          </Button>
+
           <Button
             onClick={handleExportCSV}
             className="bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs gap-1.5"

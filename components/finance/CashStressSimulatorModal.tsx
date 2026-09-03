@@ -69,6 +69,18 @@ export function CashStressSimulatorModal({
 
         {/* Body Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6 text-xs">
+          {/* PRT-012: Assumption Disclaimer */}
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2.5 text-xs text-amber-900">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold block">
+                Peringatan Ketentuan Prakiraan Arus Kas (PRD PRT-012):
+              </span>
+              <span className="text-[11px] text-amber-800">
+                Simulasi ini adalah model skenario berbasis asumsi operasional. COVE tidak memberikan prakiraan tanggal pasti pencairan kas tanpa indikator tingkat keyakinan (confidence level) dan bukti pemenuhan klausul kontrak.
+              </span>
+            </div>
+          </div>
           {/* 1. Control Sliders & Scenario Settings */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
             {/* Delay Slider */}

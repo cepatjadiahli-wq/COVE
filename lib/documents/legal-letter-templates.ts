@@ -3,7 +3,8 @@
  * Generates official construction correspondence letters complying with Indonesian contracting standards.
  */
 
-import { formatIDR, terbilangIDR } from "@/lib/finance/construction-tax";
+import { formatIDR } from "@/lib/utils";
+import { terbilangIDR } from "@/lib/finance/construction-tax";
 
 export type LegalLetterType =
   | "OPNAME_REQUEST"

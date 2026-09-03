@@ -2,7 +2,15 @@
  * COVE Commercial Subscription Tiers & Feature Access Entitlements
  */
 
-export type SubscriptionTierId = "pilot_free" | "monthly_129k" | "annual_499k" | "lifetime_799k";
+export type SubscriptionTierId =
+  | "pilot_free"
+  | "monthly_129k"
+  | "annual_499k"
+  | "lifetime_799k"
+  | "b2b_pilot"
+  | "b2b_core"
+  | "b2b_scale"
+  | "b2b_enterprise";
 
 export interface SubscriptionTier {
   id: SubscriptionTierId;
@@ -128,14 +136,112 @@ export const SUBSCRIPTION_TIERS: Record<SubscriptionTierId, SubscriptionTier> = 
       { key: "vip_support", label: "Prioritas Konsultasi & VIP Support 24/7", included: true },
     ],
   },
+
+  b2b_pilot: {
+    id: "b2b_pilot",
+    name: "Paid Pilot (Concierge 45 Hari)",
+    badge: "Validasi Pilot ⭐",
+    price: 10000000,
+    priceFormatted: "Rp 10.000.000",
+    billingPeriod: "sekali bayar / 45 hari",
+    durationDays: 45,
+    description: "1 proyek aktif, maks 10 pengguna, pendampingan intake data, 4 weekly reviews, dan Pilot ROI Scorecard.",
+    maxProjects: 1,
+    maxMembers: 10,
+    features: [
+      { key: "p2c", label: "Progress-to-Cash Workflow (5 Gap Ledger)", included: true },
+      { key: "bap_pdf", label: "Generator BAP Tripartite & Kuitansi Resmi", included: true },
+      { key: "readiness_gate", label: "Claim Readiness Gatekeeper", included: true },
+      { key: "action_queue", label: "Action & Escalation Queue (SLA Breach)", included: true },
+      { key: "portfolio_review", label: "Portfolio Review & ROI Ledger", included: true },
+      { key: "erp_bridge", label: "Jembatan CSV Rekonsiliasi ERP", included: true },
+    ],
+  },
+
+  b2b_core: {
+    id: "b2b_core",
+    name: "Core B2B Subscription",
+    badge: "Paket Rekomendasi 🏆",
+    price: 2500000,
+    priceFormatted: "Rp 2.500.000",
+    billingPeriod: "per bulan (Min. Tahunan Rp 30 Juta)",
+    durationDays: 365,
+    description: "1 proyek aktif (ekspansi Rp750rb/proyek/bln), 10 pengguna, lima modul inti COVE lengkap.",
+    isPopular: true,
+    maxProjects: 1,
+    maxMembers: 10,
+    features: [
+      { key: "p2c", label: "Progress-to-Cash Workflow (5 Gap Ledger)", included: true },
+      { key: "bap_pdf", label: "Generator BAP Tripartite & Kuitansi Resmi", included: true },
+      { key: "readiness_gate", label: "Claim Readiness Gatekeeper", included: true },
+      { key: "action_queue", label: "Action & Escalation Queue (SLA Breach)", included: true },
+      { key: "portfolio_review", label: "Portfolio Review & ROI Ledger", included: true },
+      { key: "erp_bridge", label: "Jembatan CSV Rekonsiliasi ERP", included: true },
+    ],
+  },
+
+  b2b_scale: {
+    id: "b2b_scale",
+    name: "Scale B2B Subscription",
+    badge: "Multi-Proyek",
+    price: 5000000,
+    priceFormatted: "Rp 5.000.000",
+    billingPeriod: "per bulan (Min. Tahunan Rp 60 Juta)",
+    durationDays: 365,
+    description: "Hingga 5 proyek aktif, 25 pengguna, evaluasi portofolio komparatif dan prioritas implementasi.",
+    maxProjects: 5,
+    maxMembers: 25,
+    features: [
+      { key: "p2c", label: "Progress-to-Cash Workflow (5 Gap Ledger)", included: true },
+      { key: "bap_pdf", label: "Generator BAP Tripartite & Kuitansi Resmi", included: true },
+      { key: "readiness_gate", label: "Claim Readiness Gatekeeper", included: true },
+      { key: "action_queue", label: "Action & Escalation Queue (SLA Breach)", included: true },
+      { key: "portfolio_review", label: "Portfolio Review & ROI Ledger", included: true },
+      { key: "erp_bridge", label: "Jembatan CSV Rekonsiliasi ERP", included: true },
+      { key: "multi_project_ranking", label: "Multi-Project Portfolio Rankings", included: true },
+    ],
+  },
+
+  b2b_enterprise: {
+    id: "b2b_enterprise",
+    name: "Enterprise B2B",
+    badge: "Custom Proposal",
+    price: 15000000,
+    priceFormatted: "Rp 15.000.000",
+    billingPeriod: "proposal tahunan",
+    durationDays: 365,
+    description: "15+ proyek aktif, pengguna tanpa batas, integrasi SSO/API kustom, dedicated onboarding engineer.",
+    maxProjects: -1,
+    maxMembers: -1,
+    features: [
+      { key: "p2c", label: "Progress-to-Cash Workflow (5 Gap Ledger)", included: true },
+      { key: "bap_pdf", label: "Generator BAP Tripartite & Kuitansi Resmi", included: true },
+      { key: "readiness_gate", label: "Claim Readiness Gatekeeper", included: true },
+      { key: "action_queue", label: "Action & Escalation Queue (SLA Breach)", included: true },
+      { key: "portfolio_review", label: "Portfolio Review & ROI Ledger", included: true },
+      { key: "erp_bridge", label: "Jembatan CSV Rekonsiliasi ERP", included: true },
+      { key: "sso_api", label: "SSO SAML / Okta & Custom ERP API SLA", included: true },
+      { key: "dedicated_concierge", label: "Dedicated Onboarding Engineer", included: true },
+    ],
+  },
 };
 
 /**
  * Checks if current tenant has access to a specific feature key
  */
 export function hasFeatureAccess(tierId: string | undefined, featureKey: string): boolean {
+  if (tierId === "b2b_enterprise") return true;
+
   const normalizedTier: SubscriptionTierId =
-    tierId === "lifetime_799k" || tierId === "lifetime" || tierId === "enterprise"
+    tierId === "b2b_pilot"
+      ? "b2b_pilot"
+      : tierId === "b2b_core"
+      ? "b2b_core"
+      : tierId === "b2b_scale"
+      ? "b2b_scale"
+      : tierId === "b2b_enterprise"
+      ? "b2b_enterprise"
+      : tierId === "lifetime_799k" || tierId === "lifetime" || tierId === "enterprise"
       ? "lifetime_799k"
       : tierId === "annual_499k" || tierId === "annual" || tierId === "portfolio_pro"
       ? "annual_499k"

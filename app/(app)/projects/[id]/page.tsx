@@ -18,16 +18,21 @@ import {
   AlertTriangle,
   FileText,
   Clock,
-  Plus,
   FileSpreadsheet,
+  Scale,
+  ShieldCheck,
+  CheckCircle2,
 } from "lucide-react";
+import { ContractRuleVersionModal } from "@/components/projects/ContractRuleVersionModal";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
 
 export default function ProjectDetailPage() {
   const params = useParams();
   const { t, language } = useLanguage();
+  const { currentUser, refreshState } = useTenant();
   const [showVoModal, setShowVoModal] = useState(false);
   const [showLetterModal, setShowLetterModal] = useState(false);
+  const [showRuleModal, setShowRuleModal] = useState(false);
   const projectId = params.id as string;
 
   const project = coveStore.projects.find((p) => p.id === projectId) || coveStore.projects[0];
@@ -37,6 +42,10 @@ export default function ProjectDetailPage() {
   const projectBlockers = coveStore.blockers.filter((b) => b.projectId === project.id);
   const projectActions = coveStore.actions.filter((a) => a.projectId === project.id);
   const projectAudit = coveStore.auditLogs.filter((l) => l.entityId === project.id || claims.some((c) => c.id === l.entityId));
+
+  const ruleVersions = coveStore.getContractRuleVersions(project.id);
+  const activeRule = coveStore.getActiveContractRule(project.id);
+  const pendingRule = ruleVersions.find((r) => r.status === "PENDING_APPROVAL");
 
   const pipeline = coveStore.getMoneyPipeline(project.id);
 
@@ -145,6 +154,10 @@ export default function ProjectDetailPage() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="claims">Progress-to-Cash ({claims.length})</TabsTrigger>
           <TabsTrigger value="addendum">{language === "id" ? "Addendum & VO" : "Addendums & VO"}</TabsTrigger>
+          <TabsTrigger value="rules" className="flex items-center gap-1.5">
+            <Scale className="h-3.5 w-3.5" />
+            <span>{language === "id" ? `Aturan Kontrak (${ruleVersions.length})` : `Contract Rules (${ruleVersions.length})`}</span>
+          </TabsTrigger>
           <TabsTrigger value="blockers">Blockers ({projectBlockers.length})</TabsTrigger>
           <TabsTrigger value="actions">Actions ({projectActions.length})</TabsTrigger>
           <TabsTrigger value="activity">{language === "id" ? "Riwayat Aktivitas" : "Activity Log"}</TabsTrigger>
@@ -449,6 +462,200 @@ export default function ProjectDetailPage() {
             </div>
           </div>
         </TabsContent>
+
+        {/* 7. CONTRACT RULES & VERSIONING TAB (PHASE 3) */}
+        <TabsContent value="rules" className="mt-4 space-y-6">
+          {/* Pending Approval Alert Banner */}
+          {pendingRule && (
+            <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-start sm:items-center gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-700 shrink-0 mt-0.5 sm:mt-0" />
+                <div>
+                  <span className="font-bold text-amber-900 block text-xs">
+                    Usulan Versi Aturan Kontrak Baru ({pendingRule.versionNumber}) Menunggu Approval Direksi/Owner!
+                  </span>
+                  <span className="text-[11px] text-amber-800 block mt-0.5">
+                    Diajukan oleh <strong>{pendingRule.createdBy}</strong> • Klausul: {pendingRule.sourceClauseRef} • Cut-off: Tgl {pendingRule.cutOffDay}, SLA Review: {pendingRule.reviewSlaDays} hari, Payment Term: {pendingRule.paymentTermDays} hari ({pendingRule.calendarBasis === "WORKING_DAYS" ? "Hari Kerja" : "Hari Kalender"}).
+                  </span>
+                </div>
+              </div>
+              {(currentUser.role === "OWNER" || currentUser.role === "ADMIN") && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    coveStore.approveContractRuleVersion(pendingRule.id, `${currentUser.fullName} (${currentUser.role})`);
+                    refreshState();
+                  }}
+                  className="bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs gap-1.5 shrink-0"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  <span>Sahkan Versi Ini</span>
+                </Button>
+              )}
+            </div>
+          )}
+
+          {/* Active Contract Rule Card */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-2xs space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Scale className="h-5 w-5 text-blue-600" />
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Fondasi Aturan Kontrak Terkini ({activeRule?.versionNumber || "v1.0"})
+                  </h3>
+                  <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded text-[10px] uppercase">
+                    Aktif &amp; Terikat Hukum
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  Sumber kebenaran legal acuan pemotongan retensi, recovery uang muka, batas SLA opname/review, dan jatuh tempo kas
+                </p>
+              </div>
+
+              <Button
+                onClick={() => setShowRuleModal(true)}
+                size="sm"
+                className="bg-slate-900 text-white font-bold text-xs gap-1.5"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Usulkan Perubahan Aturan</span>
+              </Button>
+            </div>
+
+            {/* 4 Essential Operational Timings */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase block">Tanggal Cut-off Bulanan</span>
+                <span className="text-base font-black font-mono text-slate-900 mt-1 block">
+                  Setiap Tgl {activeRule?.cutOffDay || 25}
+                </span>
+                <span className="text-[10px] text-slate-400">Batas opname bersama</span>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase block">Lead Time Internal QS</span>
+                <span className="text-base font-black font-mono text-slate-900 mt-1 block">
+                  {activeRule?.internalLeadTimeDays || 5} Hari
+                </span>
+                <span className="text-[10px] text-slate-400">Penyusunan berkas klaim</span>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase block">SLA Review MK / Konsultan</span>
+                <span className="text-base font-black font-mono text-amber-700 mt-1 block">
+                  {activeRule?.reviewSlaDays || 14} Hari
+                </span>
+                <span className="text-[10px] text-slate-400">Batas pengesahan BAP</span>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase block">Payment Term / Jatuh Tempo</span>
+                <span className="text-base font-black font-mono text-blue-700 mt-1 block">
+                  {activeRule?.paymentTermDays || 30} Hari
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  Basis {activeRule?.calendarBasis === "WORKING_DAYS" ? "Hari Kerja (Working Days)" : "Hari Kalender"}
+                </span>
+              </div>
+            </div>
+
+            {/* Financial & Tax Clauses */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase block">Potongan Retensi Kontrak</span>
+                <span className="text-base font-black font-mono text-slate-900 mt-1 block">
+                  {activeRule?.retentionPercent || 5.0}%
+                </span>
+                <span className="text-[10px] text-slate-400">Dicairkan saat BAP FHO</span>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase block">Pemotongan Uang Muka</span>
+                <span className="text-base font-black font-mono text-slate-900 mt-1 block">
+                  {activeRule?.advanceRecoveryPercent || 0}% ({activeRule?.advanceRecoveryRule || "NONE"})
+                </span>
+                <span className="text-[10px] text-slate-400">Dipotong dari nilai bruto</span>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase block">Klausul Pajak Khusus Proyek</span>
+                <span className="text-xs font-bold text-slate-800 mt-1 block leading-snug">
+                  {activeRule?.taxTreatment || "PPN 11% & PPh Final 1.75%"}
+                </span>
+                <span className="text-[10px] text-slate-400">Bukan kalkulator universal</span>
+              </div>
+            </div>
+
+            {/* Legal Footnote */}
+            <div className="p-3.5 bg-slate-50/80 rounded-lg border border-slate-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <span className="text-slate-500 block text-[11px]">Klausul Dasar Acuan Kontrak:</span>
+                <span className="font-bold text-slate-900 font-mono">{activeRule?.sourceClauseRef || "Pasal 8 SPK"}</span>
+                {activeRule?.notes && (
+                  <span className="text-slate-500 block text-[11px] mt-0.5">{activeRule.notes}</span>
+                )}
+              </div>
+              <div className="text-left sm:text-right text-[11px] text-slate-500">
+                <span>Disahkan oleh: <strong className="text-slate-800">{activeRule?.approvedBy || "Raka Pratama (Owner)"}</strong></span>
+                <span className="block text-[10px]">Tanggal Efektif: {activeRule?.effectiveDate || project.contractStartDate}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Version History Table */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-2xs space-y-4">
+            <div>
+              <h4 className="text-sm font-bold text-slate-900">Riwayat Versi Aturan Kontrak (Version History)</h4>
+              <p className="text-xs text-slate-500">Audit trail lengkap seluruh riwayat amandemen aturan komersial proyek</p>
+            </div>
+
+            <div className="border border-slate-200 rounded-lg overflow-hidden text-xs">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold uppercase text-slate-500">
+                    <th className="py-3 px-4">Versi</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4">Tgl Efektif</th>
+                    <th className="py-3 px-4">Cut-off</th>
+                    <th className="py-3 px-4">SLA Review</th>
+                    <th className="py-3 px-4">Payment Term</th>
+                    <th className="py-3 px-4">Retensi</th>
+                    <th className="py-3 px-4">Klausul Acuan</th>
+                    <th className="py-3 px-4">Disahkan Oleh</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {ruleVersions.map((ver) => (
+                    <tr key={ver.id} className="hover:bg-slate-50">
+                      <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{ver.versionNumber}</td>
+                      <td className="py-3.5 px-4">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            ver.status === "APPROVED"
+                              ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                              : ver.status === "PENDING_APPROVAL"
+                              ? "bg-amber-100 text-amber-900 border border-amber-300"
+                              : "bg-slate-100 text-slate-500"
+                          }`}
+                        >
+                          {ver.status}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-700">{ver.effectiveDate}</td>
+                      <td className="py-3.5 px-4 font-mono">Tgl {ver.cutOffDay}</td>
+                      <td className="py-3.5 px-4 font-mono">{ver.reviewSlaDays} hari</td>
+                      <td className="py-3.5 px-4 font-mono">{ver.paymentTermDays} hari ({ver.calendarBasis === "WORKING_DAYS" ? "HK" : "Kalender"})</td>
+                      <td className="py-3.5 px-4 font-mono">{ver.retentionPercent}%</td>
+                      <td className="py-3.5 px-4 text-slate-800 font-medium max-w-[200px] truncate">{ver.sourceClauseRef}</td>
+                      <td className="py-3.5 px-4 text-slate-600">{ver.approvedBy || ver.createdBy}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </TabsContent>
       </Tabs>
 
       {/* Variation Order / Addendum Modal */}
@@ -456,6 +663,15 @@ export default function ProjectDetailPage() {
         open={showVoModal}
         onOpenChange={setShowVoModal}
         projectId={project.id}
+      />
+
+      {/* Contract Rule Versioning Modal (Phase 3) */}
+      <ContractRuleVersionModal
+        open={showRuleModal}
+        onOpenChange={setShowRuleModal}
+        projectId={project.id}
+        contractId={contract?.id || "ctr-default"}
+        currentActiveRule={activeRule}
       />
 
       {/* Official Legal Letter Generator Modal */}

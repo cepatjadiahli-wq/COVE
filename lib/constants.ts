@@ -454,11 +454,14 @@ export const OUTCOME_TYPE_LABELS: Record<OutcomeType, string> = {
 };
 
 // ==========================================
-// 7. DATA FRESHNESS
+// 7. DATA FRESHNESS (PRD 11.3, PRT-006)
 // ==========================================
 export const DATA_FRESHNESS = {
+  CURRENT: "CURRENT",
   FRESH: "FRESH",
   NEEDS_UPDATE: "NEEDS_UPDATE",
+  NEEDS_ATTENTION: "NEEDS_ATTENTION",
+  ATTENTION: "ATTENTION",
   STALE: "STALE",
   UNKNOWN: "UNKNOWN",
 } as const;
@@ -466,8 +469,11 @@ export const DATA_FRESHNESS = {
 export type DataFreshness = (typeof DATA_FRESHNESS)[keyof typeof DATA_FRESHNESS];
 
 export const FRESHNESS_CONFIG: Record<DataFreshness, { label: string; color: string; bgColor: string }> = {
+  CURRENT: { label: "Terkini (≤7h)", color: "text-emerald-700", bgColor: "bg-emerald-50" },
   FRESH: { label: "Fresh (≤24h)", color: "text-emerald-700", bgColor: "bg-emerald-50" },
-  NEEDS_UPDATE: { label: "Needs Update (>24h)", color: "text-amber-700", bgColor: "bg-amber-50" },
-  STALE: { label: "Stale (>7d)", color: "text-rose-700", bgColor: "bg-rose-50" },
-  UNKNOWN: { label: "Unknown Freshness", color: "text-slate-600", bgColor: "bg-slate-100" },
+  NEEDS_UPDATE: { label: "Perlu Update (>24h)", color: "text-amber-700", bgColor: "bg-amber-50" },
+  NEEDS_ATTENTION: { label: "Perlu Perhatian (8-14h)", color: "text-amber-700", bgColor: "bg-amber-50" },
+  ATTENTION: { label: "Perhatian (8-14h)", color: "text-amber-700", bgColor: "bg-amber-50" },
+  STALE: { label: "Usang / Stale (>14h)", color: "text-rose-700", bgColor: "bg-rose-50" },
+  UNKNOWN: { label: "Status Tidak Diketahui", color: "text-slate-600", bgColor: "bg-slate-100" },
 };

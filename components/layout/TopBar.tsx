@@ -8,6 +8,7 @@ import { ROLE_LABELS } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { coveStore } from "@/domains/store/persistent-store";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
+import { performGlobalSearch } from "@/domains/platform/service";
 
 export function TopBar() {
   const { currentOrg, currentUser, allProfiles, setCurrentUserById } = useTenant();
@@ -33,6 +34,69 @@ export function TopBar() {
             onChange={(e) => setSearchQuery(e.target.value)}
             className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 pl-9 pr-4 text-xs focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-900 transition-all text-slate-900"
           />
+
+          {/* PLT-013: Interactive Global Search Dropdown (<2s) */}
+          {searchQuery.trim().length > 0 && (() => {
+            const searchResult = performGlobalSearch(searchQuery, {
+              projects: coveStore.projects,
+              claims: coveStore.claims,
+              actions: coveStore.actions,
+              blockers: coveStore.blockers,
+              profiles: coveStore.profiles,
+            });
+
+            return (
+              <div className="absolute left-0 right-0 top-11 bg-white rounded-xl shadow-2xl border border-slate-200 p-2 z-50 max-h-96 overflow-y-auto space-y-1">
+                <div className="flex items-center justify-between px-2.5 py-1 text-[11px] border-b border-slate-100 text-slate-500">
+                  <span className="font-semibold text-slate-700">Hasil Pencarian Global (PLT-013)</span>
+                  <span className="text-[10px] text-emerald-600 font-mono font-bold">
+                    {searchResult.executionTimeMs}ms (&lt; 2s) • {searchResult.totalMatches} item
+                  </span>
+                </div>
+
+                {searchResult.results.length === 0 ? (
+                  <div className="p-4 text-center text-xs text-slate-500 space-y-1">
+                    <p className="font-bold text-slate-700">Tidak Ditemukan Hasil</p>
+                    <p className="text-[11px] text-slate-400">
+                      Gunakan nomor klaim (mis. MC-006), nama proyek, atau nama PIC.
+                    </p>
+                  </div>
+                ) : (
+                  searchResult.results.map((r) => (
+                    <Link
+                      key={`${r.type}-${r.id}`}
+                      href={r.url}
+                      onClick={() => setSearchQuery("")}
+                      className="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 transition-colors text-xs group"
+                    >
+                      <div className="flex items-center gap-2 max-w-[280px]">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          r.type === "PROJECT" ? "bg-blue-50 text-blue-700 border border-blue-200" :
+                          r.type === "CLAIM" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
+                          r.type === "ACTION" ? "bg-purple-50 text-purple-700 border border-purple-200" :
+                          r.type === "BLOCKER" ? "bg-rose-50 text-rose-700 border border-rose-200" :
+                          "bg-slate-100 text-slate-700 border border-slate-200"
+                        }`}>
+                          {r.typeLabel}
+                        </span>
+                        <div className="truncate">
+                          <span className="font-bold text-slate-900 group-hover:text-indigo-600 transition-colors block truncate">
+                            {r.title}
+                          </span>
+                          <span className="text-[11px] text-slate-500 truncate block">{r.subtitle}</span>
+                        </div>
+                      </div>
+                      {r.financialExposure !== undefined && (
+                        <span className="text-[11px] font-mono font-bold text-slate-700 shrink-0">
+                          Rp {(r.financialExposure).toLocaleString("id-ID")}
+                        </span>
+                      )}
+                    </Link>
+                  ))
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 

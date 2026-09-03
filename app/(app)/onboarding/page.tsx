@@ -17,14 +17,38 @@ import {
   Sparkles,
   ShieldAlert,
   AlertTriangle,
+  Check,
+  Clock,
+  TrendingUp,
+  Award,
+  ShieldCheck,
+  FileCheck,
+  Layers,
 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
+import {
+  B2B_PACKAGES,
+  PILOT_SCOPE_CONFIG,
+  evaluateDataAcceptance,
+  validateProjectEntitlement,
+  validateExportEntitlement,
+} from "@/domains/onboarding/service";
 
 export default function PilotOnboardingPage() {
   const router = useRouter();
   const { refreshState } = useTenant();
   const { t, language } = useLanguage();
+  const [activeTab, setActiveTab] = useState<"wizard" | "checklist" | "scorecard" | "entitlement">("wizard");
+  const [acceptanceItems, setAcceptanceItems] = useState(coveStore.getDataAcceptanceItems());
+  const [scorecards, setScorecards] = useState(coveStore.getPilotScorecards());
   const [currentStep, setCurrentStep] = useState(1);
+
+  const acceptanceSummary = evaluateDataAcceptance(acceptanceItems);
+
+  const handleToggleAcceptance = (itemId: string, newStatus: "VERIFIED" | "WAIVED" | "PENDING") => {
+    coveStore.updateDataAcceptanceItem(itemId, newStatus, "Dimas Sucipto (Commercial Manager)");
+    setAcceptanceItems([...coveStore.getDataAcceptanceItems()]);
+  };
 
   // Step 1 State: Company
   const [companyName, setCompanyName] = useState("PT Wijaya Mega Konstruksi");
@@ -201,8 +225,59 @@ export default function PilotOnboardingPage() {
         </div>
       </div>
 
-      {/* Progress Steps Indicator */}
-      <div className="grid grid-cols-7 gap-2 text-center text-xs font-bold">
+      {/* Tab Navigation */}
+      <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
+        <button
+          onClick={() => setActiveTab("wizard")}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+            activeTab === "wizard"
+              ? "bg-slate-900 text-white shadow"
+              : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+          }`}
+        >
+          1. Panduan Setup Onboarding (7 Langkah)
+        </button>
+        <button
+          onClick={() => setActiveTab("checklist")}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+            activeTab === "checklist"
+              ? "bg-slate-900 text-white shadow"
+              : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+          }`}
+        >
+          <span>2. Data Acceptance Checklist (PRD 23.3)</span>
+          <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded text-[10px] font-mono">
+            {acceptanceSummary.verifiedCount}/{acceptanceSummary.totalItems}
+          </span>
+        </button>
+        <button
+          onClick={() => setActiveTab("scorecard")}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+            activeTab === "scorecard"
+              ? "bg-slate-900 text-white shadow"
+              : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+          }`}
+        >
+          <Award className="h-3.5 w-3.5 text-amber-500" />
+          <span>3. Pilot Scorecard Hari ke-45 (PRD 23.2 & 24.5)</span>
+        </button>
+        <button
+          onClick={() => setActiveTab("entitlement")}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+            activeTab === "entitlement"
+              ? "bg-slate-900 text-white shadow"
+              : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+          }`}
+        >
+          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+          <span>4. Paket & Entitlement B2B (PRD 28)</span>
+        </button>
+      </div>
+
+      {activeTab === "wizard" && (
+        <>
+          {/* Progress Steps Indicator */}
+          <div className="grid grid-cols-7 gap-2 text-center text-xs font-bold">
         {[
           t("onb.step1", "1. Profil Perusahaan"),
           t("onb.step2", "2. Tim Pilot"),
@@ -577,6 +652,321 @@ export default function PilotOnboardingPage() {
           )}
         </div>
       </div>
+    </>
+  )}
+
+  {/* TAB 2: DATA ACCEPTANCE CHECKLIST (PRD 23.3) */}
+  {activeTab === "checklist" && (
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <FileCheck className="h-5 w-5 text-emerald-600" />
+              <h2 className="text-lg font-bold text-slate-900">
+                Data Acceptance Checklist (PRD Bagian 23.3)
+              </h2>
+            </div>
+            <p className="text-xs text-slate-500 mt-1">
+              8 kriteria verifikasi wajib sebelum baseline proyek dikunci dan tindakan diluncurkan ke lapangan.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span
+              className={`text-xs font-bold px-3 py-1 rounded-full border ${
+                acceptanceSummary.isFullyAccepted
+                  ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                  : "bg-amber-50 text-amber-800 border-amber-300"
+              }`}
+            >
+              {acceptanceSummary.isFullyAccepted ? "DATA DITERIMA PENUH (ACCEPTED)" : "SEBAGIAN MENUNGGU VERIFIKASI"}
+            </span>
+            <span className="text-xs font-mono font-bold bg-slate-100 text-slate-700 px-2.5 py-1 rounded">
+              {acceptanceSummary.verifiedCount} / {acceptanceSummary.totalItems} Terverifikasi
+            </span>
+          </div>
+        </div>
+
+        {/* Checklist Table */}
+        <div className="divide-y divide-slate-100">
+          {acceptanceItems.map((item, idx) => {
+            const isVerified = item.status === "VERIFIED";
+            const isWaived = item.status === "WAIVED";
+
+            return (
+              <div key={item.id} className="py-4 flex flex-col md:flex-row md:items-start justify-between gap-4">
+                <div className="space-y-1 max-w-2xl">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold text-slate-400">0{idx + 1}.</span>
+                    <h4 className="text-xs font-bold text-slate-900">{item.itemLabel}</h4>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        isVerified
+                          ? "bg-emerald-100 text-emerald-800"
+                          : isWaived
+                          ? "bg-slate-100 text-slate-700"
+                          : "bg-amber-100 text-amber-800"
+                      }`}
+                    >
+                      {item.status}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500">{item.description}</p>
+                  {item.notes && (
+                    <p className="text-[11px] text-slate-600 bg-slate-50 p-2 rounded border border-slate-200 mt-1 font-mono">
+                      Catatan: {item.notes}
+                    </p>
+                  )}
+                  {item.verifiedByName && (
+                    <p className="text-[10px] text-slate-400">
+                      Diverifikasi oleh: <strong className="text-slate-600">{item.verifiedByName}</strong>
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 self-start shrink-0">
+                  <Button
+                    size="sm"
+                    variant={isVerified ? "default" : "outline"}
+                    onClick={() => handleToggleAcceptance(item.id, "VERIFIED")}
+                    className={`text-[11px] font-bold h-7 px-2.5 gap-1 ${
+                      isVerified ? "bg-emerald-700 text-white hover:bg-emerald-800" : "text-emerald-700 border-emerald-300"
+                    }`}
+                  >
+                    <Check className="h-3 w-3" />
+                    <span>Verifikasi</span>
+                  </Button>
+
+                  <Button
+                    size="sm"
+                    variant={isWaived ? "default" : "outline"}
+                    onClick={() => handleToggleAcceptance(item.id, "WAIVED")}
+                    className={`text-[11px] font-bold h-7 px-2.5 ${
+                      isWaived ? "bg-slate-800 text-white" : "text-slate-600 border-slate-300"
+                    }`}
+                  >
+                    Waive
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  )}
+
+  {/* TAB 3: PILOT SCORECARD DAY 45 (PRD 23.2 & 24.5) */}
+  {activeTab === "scorecard" && (
+    <div className="space-y-6">
+      {scorecards.length > 0 && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Award className="h-5 w-5 text-amber-500" />
+                <h2 className="text-lg font-bold text-slate-900">
+                  Pilot Scorecard Evaluasi Hari ke-45 (PRD 23.2 &amp; 24.5)
+                </h2>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                Proyek Pilot: <strong className="text-slate-800">{scorecards[0].projectName}</strong> • Durasi 45 Hari Selesai
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-300">
+                STATUS: PILOT SUKSES
+              </span>
+              <span className="text-xs font-bold bg-amber-50 text-amber-900 border border-amber-300 px-2.5 py-1 rounded">
+                ROI Multiplier: {scorecards[0].roiMultiplier}x
+              </span>
+            </div>
+          </div>
+
+          {/* 4 Performance Metric Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+              <span className="text-[10px] uppercase font-bold text-slate-500">Penurunan Eksposur Kas</span>
+              <div className="text-base font-black text-slate-900">
+                {formatIDR(scorecards[0].baselineExposure - scorecards[0].closingExposure)}
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Baseline {formatIDR(scorecards[0].baselineExposure)} → Akhir {formatIDR(scorecards[0].closingExposure)}
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+              <span className="text-[10px] uppercase font-bold text-slate-500">Pemotongan Siklus Penagihan</span>
+              <div className="text-base font-black text-emerald-700">
+                {scorecards[0].baselineCycleDays - scorecards[0].closingCycleDays} Hari Kerja
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Dari {scorecards[0].baselineCycleDays} hari dipangkas menjadi {scorecards[0].closingCycleDays} hari
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+              <span className="text-[10px] uppercase font-bold text-slate-500">Tindakan Level A Selesai</span>
+              <div className="text-base font-black text-slate-900">
+                {formatIDR(scorecards[0].resolvedExposureLevelA)}
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Eksposur terhambat yang berhasil dicairkan via tindakan
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-1">
+              <span className="text-[10px] uppercase font-bold text-amber-800">ROI Multiplier Pilot</span>
+              <div className="text-2xl font-black text-amber-900">
+                {scorecards[0].roiMultiplier}x
+              </div>
+              <p className="text-[10px] text-amber-700">
+                Biaya pilot Rp 10 Juta vs Rp {formatIDR(scorecards[0].resolvedExposureLevelA)} terselamatkan
+              </p>
+            </div>
+          </div>
+
+          {/* Time Budget Compliance (PRD 23.4) */}
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800">
+                Kepatuhan Anggaran Waktu Pengguna (PRD Bagian 23.4)
+              </span>
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">
+                EFISIENSI WAKTU TERCAPAI
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-white border border-slate-200">
+                <span className="text-slate-600">Total Waktu Implementasi Awal:</span>
+                <strong className="text-slate-900 font-mono">
+                  {scorecards[0].timeBudgetCompliance.implementationEffortHours} Jam (Target &lt;16 Jam)
+                </strong>
+              </div>
+              <div className="flex items-center justify-between p-3 rounded-lg bg-white border border-slate-200">
+                <span className="text-slate-600">Durasi Weekly Review Manajemen:</span>
+                <strong className="text-slate-900 font-mono">
+                  {scorecards[0].timeBudgetCompliance.weeklyReviewMinutesPerProject} Menit / Proyek (Target &le;10 Menit)
+                </strong>
+              </div>
+            </div>
+          </div>
+
+          {/* Renewal Recommendation */}
+          <div className="p-5 rounded-xl bg-slate-900 text-white space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase text-emerald-400">
+                Rekomendasi Pembaruan Komersial (Renewal Proposal)
+              </span>
+              <span className="text-xs font-black bg-emerald-500 text-slate-950 px-2.5 py-0.5 rounded">
+                Rekomendasi: Core B2B Subscription
+              </span>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              {scorecards[0].renewalRecommendationRationale}
+            </p>
+            <div className="pt-2 flex items-center gap-3">
+              <Button
+                onClick={() => router.push("/pricing")}
+                className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs"
+              >
+                Lanjutkan ke Langganan Tahunan Core B2B (Rp 2,5 Juta/bln)
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )}
+
+  {/* TAB 4: PAKET & ENTITLEMENT B2B (PRD 28) */}
+  {activeTab === "entitlement" && (
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Layers className="h-5 w-5 text-slate-900" />
+              <h2 className="text-lg font-bold text-slate-900">
+                Packaging &amp; Entitlement Komersial B2B (PRD Bagian 28)
+              </h2>
+            </div>
+            <p className="text-xs text-slate-500 mt-1">
+              Metrik penagihan resmi: <strong>Company Base + Active Project</strong> (bukan per-seat). Proyek yang telah selesai/diarsipkan tidak dihitung dalam kuota aktif.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold px-3 py-1 rounded bg-slate-100 text-slate-700 border border-slate-200">
+              Proyek Aktif Organisasi Saat Ini: 2 Proyek
+            </span>
+          </div>
+        </div>
+
+        {/* 4 B2B Tier Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Object.values(B2B_PACKAGES).map((pkg) => (
+            <div key={pkg.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col justify-between space-y-4">
+              <div className="space-y-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                  {pkg.billingPeriod}
+                </span>
+                <h3 className="text-sm font-bold text-slate-900">{pkg.name}</h3>
+                <div className="text-lg font-black text-slate-900">
+                  {formatIDR(pkg.priceAmount)}
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">{pkg.description}</p>
+              </div>
+
+              <div className="space-y-2 border-t border-slate-200 pt-3 text-[11px]">
+                <div className="flex items-center justify-between text-slate-600">
+                  <span>Batas Proyek Aktif:</span>
+                  <strong className="text-slate-900">{pkg.maxActiveProjects === -1 ? "Tak Terbatas" : `${pkg.maxActiveProjects} Proyek`}</strong>
+                </div>
+                <div className="flex items-center justify-between text-slate-600">
+                  <span>Batas Pengguna:</span>
+                  <strong className="text-slate-900">{pkg.maxUsers === -1 ? "Tak Terbatas" : `${pkg.maxUsers} Users`}</strong>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Open Data Grace Period Guarantee Banner */}
+        <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 space-y-2">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-emerald-700" />
+            <h4 className="text-xs font-bold">Jaminan Open Data Grace Period (PRD Bagian 28.1):</h4>
+          </div>
+          <p className="text-[11px] leading-relaxed">
+            Entitlement tidak boleh menghapus akses export saat subscription berakhir. Kontraktor selalu memiliki hak penuh untuk mengunduh seluruh data historis dalam format terbuka kapan pun tanpa hambatan.
+          </p>
+          <div className="pt-1">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const data = coveStore.exportFullTenantData("org-nusantara-01");
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `COVE_Full_Tenant_Data_Backup_${new Date().toISOString().split("T")[0]}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="text-xs font-bold gap-1.5 border-emerald-300 text-emerald-800 hover:bg-emerald-100"
+            >
+              <Download className="h-3.5 w-3.5" />
+              <span>Unduh Cadangan Lengkap Data Perusahaan (JSON)</span>
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )}
     </div>
   );
 }

@@ -17,14 +17,19 @@ export function FreshnessBadge({ freshness, label, sourceLabel, className }: Fre
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 bg-slate-100/80 px-2 py-0.5 rounded border border-slate-200",
+        "inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded border shadow-2xs",
+        config.bgColor,
+        config.color,
+        freshness === "CURRENT" || freshness === "FRESH" ? "border-emerald-200" :
+        freshness === "NEEDS_ATTENTION" || freshness === "NEEDS_UPDATE" || freshness === "ATTENTION" ? "border-amber-200" :
+        freshness === "STALE" ? "border-rose-200" : "border-slate-200",
         className
       )}
       title={sourceLabel ? `Sumber Data: ${sourceLabel}` : undefined}
     >
-      <Clock className="h-3 w-3 text-slate-400" />
+      <Clock className="h-3 w-3 shrink-0 opacity-70" />
       <span>{displayText}</span>
-      {sourceLabel && <span className="text-slate-400">• {sourceLabel}</span>}
+      {sourceLabel && <span className="opacity-60 font-normal">• {sourceLabel}</span>}
     </span>
   );
 }

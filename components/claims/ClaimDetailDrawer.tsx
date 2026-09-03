@@ -380,7 +380,7 @@ export function ClaimDetailDrawer({ claimId, onClose }: ClaimDetailDrawerProps) 
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">
                 {language === "id" ? "Daftar Kelengkapan Bukti (Evidence Checklist)" : "Evidence Requirements Checklist"}
               </h4>
-              <EvidenceChecklist />
+              <EvidenceChecklist claimId={claim.id} />
             </div>
 
             {/* 6. Invoices & Payments Section */}
