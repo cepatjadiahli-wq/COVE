@@ -47,26 +47,7 @@ export async function POST(req: NextRequest) {
       headers["x-correlation-id"] = correlationId;
     }
 
-    // Safe Temporary Diagnostics (Phase 19E-R1):
-    // Log non-sensitive header names and presence booleans ONLY.
-    // NEVER log values of authorization, token, apiKey, secret, cookie, or payload!
-    if (process.env.NODE_ENV !== "test") {
-      console.log(`[Mayar Webhook Diagnostic] Header Names Received: [${headerNames.join(", ")}]`);
-      console.log(`[Mayar Webhook Diagnostic] Auth Header Presence:`, {
-        hasAuthorization: Boolean(headers["authorization"]),
-        hasXMayarToken: Boolean(headers["x-mayar-token"]),
-        hasXMayarSignature: Boolean(headers["x-mayar-signature"]),
-        hasXMayarSecret: Boolean(headers["x-mayar-secret"]),
-        hasXMayarWebhookToken: Boolean(headers["x-mayar-webhook-token"]),
-        hasXCallbackToken: Boolean(headers["x-callback-token"]),
-        hasXWebhookToken: Boolean(headers["x-webhook-token"]),
-        hasMayarToken: Boolean(headers["mayar-token"]),
-        hasMayarSignature: Boolean(headers["mayar-signature"]),
-        hasXApiKey: Boolean(headers["x-api-key"]),
-        hasToken: Boolean(headers["token"]),
-      });
-    }
-
+    // Process Webhook Event
     const result = await processWebhookEvent({
       provider: "MAYAR",
       headers,

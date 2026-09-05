@@ -17,7 +17,6 @@ import {
 import {
   createMayarPaymentLink,
   verifyMayarWebhookToken,
-  MAYAR_AUTH_HEADER_CANDIDATES,
 } from "../../../lib/mayar/client";
 
 export class MayarAdapter implements PaymentProviderAdapter {
@@ -126,12 +125,10 @@ export class MayarAdapter implements PaymentProviderAdapter {
       }
     }
 
-    // Check all known candidate header names
-    for (const candidateKey of MAYAR_AUTH_HEADER_CANDIDATES) {
-      const candidateValue = normalizedHeaders[candidateKey];
-      if (candidateValue && verifyMayarWebhookToken(candidateValue, webhookSecret)) {
-        return true;
-      }
+    // Verify exclusively using x-callback-token as proven in live environment (Phase 19E-R2)
+    const candidateValue = normalizedHeaders["x-callback-token"];
+    if (candidateValue && verifyMayarWebhookToken(candidateValue, webhookSecret)) {
+      return true;
     }
 
     return false;

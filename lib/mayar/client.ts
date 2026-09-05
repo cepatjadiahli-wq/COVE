@@ -85,20 +85,6 @@ export async function createMayarPaymentLink(
 
 import crypto from "crypto";
 
-export const MAYAR_AUTH_HEADER_CANDIDATES = [
-  "x-mayar-token",
-  "x-mayar-signature",
-  "x-mayar-secret",
-  "x-mayar-webhook-token",
-  "authorization",
-  "mayar-token",
-  "mayar-signature",
-  "x-callback-token",
-  "x-webhook-token",
-  "x-api-key",
-  "token",
-] as const;
-
 /**
  * Constant-time comparison between two strings to prevent timing side-channel attacks
  */

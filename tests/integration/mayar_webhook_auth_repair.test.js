@@ -38,7 +38,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = SERVICE_ROLE_KEY;
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
 const { MayarAdapter } = jiti("@/domains/billing/adapters/mayar-adapter.ts");
-const { verifyMayarWebhookToken, safeTimingEqual, MAYAR_AUTH_HEADER_CANDIDATES } = jiti("@/lib/mayar/client.ts");
+const { verifyMayarWebhookToken, safeTimingEqual } = jiti("@/lib/mayar/client.ts");
 const { processWebhookEvent, sanitizeWebhookPayload } = jiti("@/domains/billing/webhook-service.ts");
 
 async function runMayarWebhookAuthRepairTestSuite() {
@@ -80,7 +80,7 @@ async function runMayarWebhookAuthRepairTestSuite() {
     const { count: invCountBefore } = await supabase.from("billing_invoices").select("*", { count: "exact", head: true });
 
     const headersValid = {
-      authorization: `Bearer ${TEST_SECRET}`,
+      "x-callback-token": `Bearer ${TEST_SECRET}`,
       "x-correlation-id": `corr_test1_${runId}`,
     };
 
@@ -128,7 +128,7 @@ async function runMayarWebhookAuthRepairTestSuite() {
     const resWrongAuth = await processWebhookEvent({
       provider: "MAYAR",
       headers: {
-        authorization: "Bearer wrong_token_secret_xyz",
+        "x-callback-token": "Bearer wrong_token_secret_xyz",
         "x-correlation-id": `corr_test3_${runId}`,
       },
       rawPayload: testPayload,
@@ -140,9 +140,9 @@ async function runMayarWebhookAuthRepairTestSuite() {
     console.log("  ✔ Test 3 Passed: Invalid token rejected with HTTP 401.\n");
 
     // -------------------------------------------------------------------------
-    // Test 4: Format token aktual Mayar (Bearer, Token, Raw, across candidate headers)
+    // Test 4: Format token aktual Mayar (Bearer, Token, Raw) on x-callback-token
     // -------------------------------------------------------------------------
-    console.log("--- TEST 4: Candidate header keys & formats accepted ---");
+    console.log("--- TEST 4: Header x-callback-token formats accepted ---");
     // Verify constant-time comparison helper and verifyMayarWebhookToken
     assert.strictEqual(safeTimingEqual("secret123", "secret123"), true);
     assert.strictEqual(safeTimingEqual("secret123", "secret999"), false);
@@ -151,21 +151,16 @@ async function runMayarWebhookAuthRepairTestSuite() {
     assert.strictEqual(verifyMayarWebhookToken("Bearer secret123", "secret123"), true);
     assert.strictEqual(verifyMayarWebhookToken("wrong", "secret123"), false);
 
-    // Test across all candidate header names
-    for (const headerName of MAYAR_AUTH_HEADER_CANDIDATES) {
-      // 1. Raw format
-      const rawHeaders = { [headerName]: TEST_SECRET };
-      assert.strictEqual(adapter.verifyWebhook(rawHeaders, "{}"), true, `Raw token in '${headerName}' must pass`);
+    const headerName = "x-callback-token";
+    assert.strictEqual(adapter.verifyWebhook({ [headerName]: TEST_SECRET }, "{}"), true, `Raw token in x-callback-token must pass`);
+    assert.strictEqual(adapter.verifyWebhook({ [headerName]: `Bearer ${TEST_SECRET}` }, "{}"), true, `Bearer token in x-callback-token must pass`);
+    assert.strictEqual(adapter.verifyWebhook({ [headerName]: `Token ${TEST_SECRET}` }, "{}"), true, `Token prefix in x-callback-token must pass`);
 
-      // 2. Bearer format
-      const bearerHeaders = { [headerName]: `Bearer ${TEST_SECRET}` };
-      assert.strictEqual(adapter.verifyWebhook(bearerHeaders, "{}"), true, `Bearer token in '${headerName}' must pass`);
+    // Verify rejection of other guessed headers
+    assert.strictEqual(adapter.verifyWebhook({ "x-mayar-token": TEST_SECRET }, "{}"), false, "x-mayar-token must be rejected");
+    assert.strictEqual(adapter.verifyWebhook({ authorization: `Bearer ${TEST_SECRET}` }, "{}"), false, "authorization must be rejected");
 
-      // 3. Token prefix format
-      const tokenPrefixHeaders = { [headerName]: `Token ${TEST_SECRET}` };
-      assert.strictEqual(adapter.verifyWebhook(tokenPrefixHeaders, "{}"), true, `Token prefix in '${headerName}' must pass`);
-    }
-    console.log(`  ✔ Test 4 Passed: All ${MAYAR_AUTH_HEADER_CANDIDATES.length} candidate headers accepted with Raw, Bearer, and Token prefixes.\n`);
+    console.log(`  ✔ Test 4 Passed: Header x-callback-token accepted with Raw, Bearer, and Token prefixes. Other headers rejected.\n`);
 
     // -------------------------------------------------------------------------
     // Test 5: Unknown event -> HTTP 200, IGNORED_EVENT without mutation
@@ -181,7 +176,7 @@ async function runMayarWebhookAuthRepairTestSuite() {
     const resUnknown = await processWebhookEvent({
       provider: "MAYAR",
       headers: {
-        "x-mayar-token": TEST_SECRET,
+        "x-callback-token": TEST_SECRET,
         "x-correlation-id": `corr_test5_${runId}`,
       },
       rawPayload: unknownPayload,
@@ -207,7 +202,7 @@ async function runMayarWebhookAuthRepairTestSuite() {
     // First call
     const resFirst = await processWebhookEvent({
       provider: "MAYAR",
-      headers: { "x-mayar-token": TEST_SECRET },
+      headers: { "x-callback-token": TEST_SECRET },
       rawPayload: dupPayload,
       rawBody: JSON.stringify(dupPayload),
     });
@@ -216,7 +211,7 @@ async function runMayarWebhookAuthRepairTestSuite() {
     // Second call with same event
     const resSecond = await processWebhookEvent({
       provider: "MAYAR",
-      headers: { "x-mayar-token": TEST_SECRET },
+      headers: { "x-callback-token": TEST_SECRET },
       rawPayload: dupPayload,
       rawBody: JSON.stringify(dupPayload),
     });
@@ -255,6 +250,7 @@ async function runMayarWebhookAuthRepairTestSuite() {
       token: TEST_SECRET,
       apiKey: "myr_key_secret123",
       authorization: `Bearer ${TEST_SECRET}`,
+      "x-callback-token": `Bearer ${TEST_SECRET}`,
       data: {
         creditCard: "4111-2222-3333-4444",
         cvv: "123",
@@ -266,6 +262,7 @@ async function runMayarWebhookAuthRepairTestSuite() {
     assert.strictEqual(sanitized.token, "[REDACTED]", "token must be redacted");
     assert.strictEqual(sanitized.apiKey, "[REDACTED]", "apiKey must be redacted");
     assert.strictEqual(sanitized.authorization, "[REDACTED]", "authorization must be redacted");
+    assert.strictEqual(sanitized["x-callback-token"], "[REDACTED]", "x-callback-token must be redacted");
     assert.strictEqual(sanitized.data.creditCard, "[REDACTED]", "creditCard must be redacted");
     assert.strictEqual(sanitized.data.cvv, "[REDACTED]", "cvv must be redacted");
     assert.strictEqual(sanitized.data.secret_key, "[REDACTED]", "secret_key must be redacted");
