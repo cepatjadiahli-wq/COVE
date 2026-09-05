@@ -90,8 +90,8 @@ export async function resolveUserFromCanonicalAuth(
   if (profileError || !profile || !profile.id) {
     return {
       authorized: false,
-      statusCode: 403,
-      error: "Forbidden: Profil pengguna tidak ditemukan dalam basis data.",
+      statusCode: 409,
+      error: "Conflict: Profil pengguna tidak ditemukan. Silakan lengkapi onboarding terlebih dahulu.",
     };
   }
 
@@ -105,8 +105,8 @@ export async function resolveUserFromCanonicalAuth(
   if (memberError || !memberships || memberships.length === 0) {
     return {
       authorized: false,
-      statusCode: 403,
-      error: "Forbidden: Pengguna tidak memiliki keanggotaan aktif dalam organisasi mana pun.",
+      statusCode: 409,
+      error: "Conflict: Pengguna belum memiliki organisasi. Silakan buat organisasi terlebih dahulu.",
     };
   }
 
@@ -177,8 +177,8 @@ export async function validateBillingAuth(
   if (!resolvedUser.orgId) {
     return {
       authorized: false,
-      statusCode: 403,
-      error: "Forbidden: Akun pengguna tidak terasosiasi dengan organisasi aktif mana pun.",
+      statusCode: 409,
+      error: "Conflict: Pengguna belum memiliki organisasi. Silakan selesaikan onboarding terlebih dahulu.",
     };
   }
 

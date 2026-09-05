@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { SUBSCRIPTION_TIERS, SubscriptionTier, SubscriptionTierId } from "@/lib/subscription/tiers";
+import { createClient } from "@/lib/supabase/client";
 import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,6 +46,19 @@ export default function PricingPage() {
 
   const displayTiers = pricingCategory === "b2b" ? b2bTiers : legacyTiers;
 
+  const handleSelectTier = async (tier: SubscriptionTier) => {
+    const supabase = createClient();
+    const { data } = await supabase.auth.getSession();
+    
+    if (!data.session) {
+      window.location.href = `/signup?plan=${tier.id}&returnTo=/pricing`;
+      return;
+    }
+    
+    setSelectedTier(tier);
+    setErrorMsg(null);
+  };
+
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTier) return;
@@ -64,7 +78,17 @@ export default function PricingPage() {
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        window.location.href = `/login?plan=${selectedTier.id}&returnTo=/pricing`;
+        return;
+      }
+
+      if (res.status === 409 || res.status === 422) {
+        window.location.href = `/onboarding?plan=${selectedTier.id}&returnTo=/pricing`;
+        return;
+      }
 
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Gagal membuat link pembayaran.");
@@ -225,10 +249,7 @@ export default function PricingPage() {
                 {/* Select CTA Button */}
                 <div>
                   <Button
-                    onClick={() => {
-                      setSelectedTier(tier);
-                      setErrorMsg(null);
-                    }}
+                    onClick={() => handleSelectTier(tier)}
                     className={`w-full font-black text-xs sm:text-sm py-5 rounded-xl transition-all shadow-lg ${
                       isLifetime
                         ? "bg-amber-500 hover:bg-amber-400 text-slate-950"
