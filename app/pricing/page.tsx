@@ -47,16 +47,39 @@ export default function PricingPage() {
   const displayTiers = pricingCategory === "b2b" ? b2bTiers : legacyTiers;
 
   const handleSelectTier = async (tier: SubscriptionTier) => {
-    const supabase = createClient();
-    const { data } = await supabase.auth.getSession();
-    
-    if (!data.session) {
-      window.location.href = `/signup?plan=${tier.id}&returnTo=/pricing`;
-      return;
+    setIsLoading(true);
+    try {
+      const res = await fetch("/api/auth/session");
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        // Clear potential legacy client-side localStorage session
+        const { createClient } = await import("@/lib/supabase/client");
+        const supabase = createClient();
+        await supabase.auth.signOut();
+        
+        window.location.href = `/login?plan=${tier.id}&returnTo=/pricing`;
+        return;
+      }
+
+      if (res.status === 409 || res.status === 422) {
+        window.location.href = `/onboarding?plan=${tier.id}&returnTo=/pricing`;
+        return;
+      }
+
+      if (res.status === 403) {
+        setErrorMsg("Forbidden: Anda tidak memiliki izin (OWNER/ADMIN) untuk melakukan pembelian paket.");
+        return;
+      }
+
+      // If server session is fully valid (200 OK)
+      setSelectedTier(tier);
+      setErrorMsg(null);
+    } catch (err) {
+      console.error("Session check failed", err);
+    } finally {
+      setIsLoading(false);
     }
-    
-    setSelectedTier(tier);
-    setErrorMsg(null);
   };
 
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
@@ -268,7 +291,10 @@ export default function PricingPage() {
         </div>
 
         {/* Payment Gateways Supported */}
-        <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-800/80 text-center space-y-3">
+        <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-800/80 text-center space-y-3 relative">
+          <div className="absolute top-2 right-4 text-[10px] text-slate-700 font-mono">
+            v19.4.0 (SSR Auth Sync)
+          </div>
           <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
             Metode Pembayaran Resmi via Mayar.id Gateway Indonesia:
           </span>

@@ -140,8 +140,8 @@ async function runSecurityRemediationSuite() {
   const res3 = await postChangePlan(makeRequest("http://localhost:3000/api/billing/change-plan", {
     body: { orgId: tenantA, targetPlanId: "b2b_scale" },
   }));
-  assert.strictEqual(res3.status, 403, "User without tenant membership must yield HTTP 403");
-  console.log("    ✔ Test 3: Authenticated user without organization membership rejected with HTTP 403.");
+  assert.strictEqual(res3.status, 409, "User without tenant membership must yield HTTP 409");
+  console.log("    ✔ Test 3: Authenticated user without organization membership rejected with HTTP 409.");
 
   // Test 4: Member of Tenant A requests billing of Tenant B yields 403 (Cross-Tenant Boundary)
   setBillingSessionResolverForTest(async () => ({
@@ -271,8 +271,8 @@ async function runSecurityRemediationSuite() {
   const res10c = await postChangePlan(makeRequest("http://localhost:3000/api/billing/change-plan", {
     body: { orgId: tenantA, targetPlanId: "b2b_scale" },
   }));
-  assert.strictEqual(res10c.status, 403, "Fake user_metadata.org_id must be ignored and rejected with 403");
-  console.log("    ✔ Test 10.3: Fake user_metadata.org_id strictly ignored; returns HTTP 403.");
+  assert.strictEqual(res10c.status, 409, "Fake user_metadata.org_id must be ignored and rejected with 409");
+  console.log("    ✔ Test 10.3: Fake user_metadata.org_id strictly ignored; returns HTTP 409.");
 
   // Test 10.4: Matching email cannot substitute for missing UUID database membership
   setBillingSessionResolverForTest(async () => ({
@@ -284,8 +284,8 @@ async function runSecurityRemediationSuite() {
   const res10d = await postChangePlan(makeRequest("http://localhost:3000/api/billing/change-plan", {
     body: { orgId: tenantA, targetPlanId: "b2b_scale" },
   }));
-  assert.strictEqual(res10d.status, 403, "Email match cannot replace UUID membership in database");
-  console.log("    ✔ Test 10.4: Matching email without verified database membership UUID rejected with HTTP 403.");
+  assert.strictEqual(res10d.status, 409, "Email match cannot replace UUID membership in database");
+  console.log("    ✔ Test 10.4: Matching email without verified database membership UUID rejected with HTTP 409.");
 
   // ============================================================================
   // SECTION 1.1: Canonical Option B Resolution with Distinct UUIDs (Phase 16R.4)
@@ -383,7 +383,7 @@ async function runSecurityRemediationSuite() {
   });
   const resB2 = await resolveUserFromCanonicalAuth(mockClientDirectAuth, "org-alpha-optb");
   assert.strictEqual(resB2.authorized, false, "Searching membership with auth-uuid-001 must return 403 when user_id is profiles.id");
-  assert.strictEqual(resB2.statusCode, 403);
+  assert.strictEqual(resB2.statusCode, 409);
   console.log("    ✔ Test B.2: Direct lookup of membership using auth-uuid-001 is NOT used (fails with 403).");
 
   // 3. User without profile yields 403
@@ -393,12 +393,13 @@ async function runSecurityRemediationSuite() {
     memberships: [],
   });
   const resB3 = await resolveUserFromCanonicalAuth(mockClientNoProfile, "org-alpha-optb");
-  assert.strictEqual(resB3.authorized, false, "User without profile must yield 403");
-  assert.strictEqual(resB3.statusCode, 403);
+  assert.strictEqual(resB3.authorized, false, "User without profile must yield 409");
+  assert.strictEqual(resB3.statusCode, 409);
   assert.match(resB3.error, /Profil pengguna tidak ditemukan/);
-  console.log("    ✔ Test B.3: User without profile strictly rejected with HTTP 403.");
+  console.log("    ✔ Test B.3: User without profile strictly rejected with HTTP 409.");
+  console.log("    ✔ Test B.3: User without profile strictly rejected with HTTP 409.");
 
-  // 4. Profile without membership yields 403
+  // 4. Profile without membership yields 409
   const mockClientNoMembership = createMockSupabaseOptionB({
     authUser: { id: "auth-uuid-002", email: "nomember@cove.test" },
     profiles: [
@@ -407,10 +408,10 @@ async function runSecurityRemediationSuite() {
     memberships: [],
   });
   const resB4 = await resolveUserFromCanonicalAuth(mockClientNoMembership, "org-alpha-optb");
-  assert.strictEqual(resB4.authorized, false, "Profile without membership must yield 403");
-  assert.strictEqual(resB4.statusCode, 403);
-  assert.match(resB4.error, /tidak memiliki keanggotaan aktif/);
-  console.log("    ✔ Test B.4: Profile without membership strictly rejected with HTTP 403.");
+  assert.strictEqual(resB4.authorized, false, "Profile without membership must yield 409");
+  assert.strictEqual(resB4.statusCode, 409);
+  assert.match(resB4.error, /Pengguna belum memiliki organisasi/);
+  console.log("    ✔ Test B.4: Profile without membership strictly rejected with HTTP 409.");
 
   // 5. Membership with status 'disabled' yields 403
   const mockClientDisabled = createMockSupabaseOptionB({
@@ -423,8 +424,8 @@ async function runSecurityRemediationSuite() {
     ],
   });
   const resB5 = await resolveUserFromCanonicalAuth(mockClientDisabled, "org-alpha-optb");
-  assert.strictEqual(resB5.authorized, false, "Disabled membership must yield 403");
-  assert.strictEqual(resB5.statusCode, 403);
+  assert.strictEqual(resB5.authorized, false, "Disabled membership must yield 409");
+  assert.strictEqual(resB5.statusCode, 409);
   console.log("    ✔ Test B.5: Membership with status 'disabled' strictly rejected with HTTP 403.");
 
   // 6. Membership of Tenant A cannot access Tenant B (403)

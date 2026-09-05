@@ -166,7 +166,7 @@ async function runPhase19UatTestSuite() {
 
   const webhookRes = await processWebhookEvent({
     provider: "MAYAR",
-    headers: { "x-mayar-token": `Bearer ${webhookSecret}` },
+    headers: { "x-callback-token": `Bearer ${webhookSecret}` },
     rawPayload: validWebhookPayload,
   });
 
@@ -187,7 +187,7 @@ async function runPhase19UatTestSuite() {
   console.log("\n--- UAT 5: Invalid signature rejected ---");
   const invalidRes = await processWebhookEvent({
     provider: "MAYAR",
-    headers: { "x-mayar-token": "Bearer wrong_secret_token" },
+    headers: { "x-callback-token": "Bearer wrong_secret_token" },
     rawPayload: validWebhookPayload,
   });
   assert.strictEqual(invalidRes.success, false);
@@ -200,7 +200,7 @@ async function runPhase19UatTestSuite() {
   console.log("\n--- UAT 6: Duplicate webhook idempotency ---");
   const replayRes = await processWebhookEvent({
     provider: "MAYAR",
-    headers: { "x-mayar-token": `Bearer ${webhookSecret}` },
+    headers: { "x-callback-token": `Bearer ${webhookSecret}` },
     rawPayload: validWebhookPayload,
   });
   assert.strictEqual(replayRes.success, true);
@@ -224,7 +224,7 @@ async function runPhase19UatTestSuite() {
   };
   await processWebhookEvent({
     provider: "MAYAR",
-    headers: { "x-mayar-token": `Bearer ${webhookSecret}` },
+    headers: { "x-callback-token": `Bearer ${webhookSecret}` },
     rawPayload: olderFailedPayload,
   });
   const subAfterOutOrder = (await supabase.from("subscriptions").select("status").eq("id", testSubId).single()).data;
@@ -273,7 +273,7 @@ async function runPhase19UatTestSuite() {
   };
   const delayedRes = await processWebhookEvent({
     provider: "MAYAR",
-    headers: { "x-mayar-token": `Bearer ${webhookSecret}` },
+    headers: { "x-callback-token": `Bearer ${webhookSecret}` },
     rawPayload: delayedPayload,
   });
   assert.strictEqual(delayedRes.success, true);
@@ -290,7 +290,7 @@ async function runPhase19UatTestSuite() {
   };
   const unknownRes = await processWebhookEvent({
     provider: "MAYAR",
-    headers: { "x-mayar-token": `Bearer ${webhookSecret}` },
+    headers: { "x-callback-token": `Bearer ${webhookSecret}` },
     rawPayload: unknownPayload,
   });
   assert.strictEqual(unknownRes.success, true);
