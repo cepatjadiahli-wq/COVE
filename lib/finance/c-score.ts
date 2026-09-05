@@ -7,7 +7,7 @@
  * 4. Liquidity & Subcon Cash Balance (20%)
  */
 
-import { Claim } from "@/lib/types";
+import { DemoClaim as Claim } from "@/domains/demo/seed-data";
 
 export interface CScoreResult {
   overallScore: number; // 0 to 100

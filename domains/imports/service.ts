@@ -500,7 +500,7 @@ export function computeDeltaVersioning(
   }
 
   // Detect Removed
-  for (const [claimNum, existing] of existingMap.entries()) {
+  for (const [claimNum, existing] of Array.from(existingMap.entries())) {
     if (!incomingMap.has(claimNum)) {
       removed.push({
         claimNumber: claimNum,

@@ -36,7 +36,7 @@ import {
 
 export default function PilotOnboardingPage() {
   const router = useRouter();
-  const { refreshState } = useTenant();
+  const { currentOrg, refreshState } = useTenant();
   const { t, language } = useLanguage();
   const [activeTab, setActiveTab] = useState<"wizard" | "checklist" | "scorecard" | "entitlement">("wizard");
   const [acceptanceItems, setAcceptanceItems] = useState(coveStore.getDataAcceptanceItems());
@@ -948,7 +948,8 @@ export default function PilotOnboardingPage() {
               size="sm"
               variant="outline"
               onClick={() => {
-                const data = coveStore.exportFullTenantData("org-nusantara-01");
+                if (!currentOrg?.id) return;
+                const data = coveStore.exportFullTenantData(currentOrg.id);
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");

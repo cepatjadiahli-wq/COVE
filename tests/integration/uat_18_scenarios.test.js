@@ -5,8 +5,8 @@
 
 const { calculateClaimGaps } = require("../../domains/gaps/service");
 const { evaluateClaimReadiness, checkReadinessOverride } = require("../../domains/readiness/service");
-const { validateActionCreation, validateActionResolution, validateActionReopen } = require("../../domains/actions/service");
-const { calculatePortfolioSummary, calculateRoiLedger, lockBaselineSnapshot } = require("../../domains/portfolio/service");
+const { validateActionCreation, validateActionResolution } = require("../../domains/actions/service");
+const { calculateRoiLedger } = require("../../domains/portfolio/service");
 const { previewBulkAction } = require("../../domains/platform/service");
 const { hasProjectAccess, deactivateUserAndRevokeSession } = require("../../lib/auth/rbac");
 const {

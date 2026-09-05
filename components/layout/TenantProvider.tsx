@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState } from "react";
 import { coveStore } from "@/domains/store/persistent-store";
-import { DemoProfile, DemoOrg } from "@/domains/demo/seed-data";
+import { DemoProfile, DemoOrg, INITIAL_ORG } from "@/domains/demo/seed-data";
 
 import { evaluateRolePermission, hasProjectAccess, PermissionAction, PermissionEvaluation } from "@/lib/auth/rbac";
 
@@ -21,7 +21,7 @@ interface TenantContextType {
 const TenantContext = createContext<TenantContextType | null>(null);
 
 export function TenantProvider({ children }: { children: React.ReactNode }) {
-  const [currentOrg] = useState<DemoOrg>(coveStore.organizations[0]);
+  const [currentOrg] = useState<DemoOrg>(INITIAL_ORG);
   const [currentUser, setCurrentUser] = useState<DemoProfile>(coveStore.profiles[0]); // Default to Raka Pratama (Owner)
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 

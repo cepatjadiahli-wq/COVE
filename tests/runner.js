@@ -1,3 +1,12 @@
+process.env.NODE_ENV = "test";
+const path = require("path");
+const jiti = require("jiti")(__filename, {
+  alias: {
+    "@": path.resolve(__dirname, "../"),
+  },
+});
+jiti.register();
+
 const { runGapsTests } = require("./unit/gaps.test");
 const { runRiskTests } = require("./unit/risk.test");
 const { runInvoiceTests } = require("./unit/invoices.test");
@@ -20,6 +29,19 @@ const { runPlatformUsabilityTestSuite } = require("./unit/platform_usability.tes
 const { runOnboardingEntitlementTestSuite } = require("./unit/onboarding_entitlement.test");
 const { runUatMasterTestSuite } = require("./integration/uat_18_scenarios.test");
 const { runDodReleaseReadinessTestSuite } = require("./unit/dod_release_readiness.test");
+const { runSubscriptionFoundationTestSuite } = require("./unit/subscription_foundation.test");
+const { runPaymentProviderWebhookTestSuite } = require("./unit/payment_provider_webhook.test");
+const { runCustomerBillingPortalTestSuite } = require("./unit/customer_billing_portal.test");
+const { runSecurityRemediationTestSuite } = require("./unit/security_remediation.test");
+const { runDunningRecoveryLifecycleTestSuite } = require("./unit/dunning_recovery_lifecycle.test");
+const { runDunningE2EDatabaseTests } = require("./integration/dunning_e2e_database.test");
+const { runAdminBillingTestSuite } = require("./integration/admin_billing_control_center.test");
+const { runPhase18RIntegrityTestSuite } = require("./integration/phase18r_financial_integrity.test");
+const { runPhase18R1SafetyTestSuite } = require("./integration/phase18r1_serverless_safety.test");
+const { runFaultInjectionTestSuite } = require("./integration/phase18r1_fault_injection.test");
+const { runPhase19UatTestSuite } = require("./integration/subscription_phase19_uat.test");
+const { runBackupRestoreIntegrityTestSuite } = require("./integration/backup_restore_integrity.test");
+const { runMayarWebhookAuthRepairTestSuite } = require("./integration/mayar_webhook_auth_repair.test");
 
 console.log("================================================================================");
 console.log("  COVE V1 — CONTROLLED CUSTOMER PILOT READINESS AUDIT RUNNER");
@@ -50,6 +72,19 @@ const suites = [
   { name: "Phase 10 Onboarding, Pilot Scorecard & Entitlement", classification: "Commercial & Entitlement Unit Test", fn: runOnboardingEntitlementTestSuite },
   { name: "Phase 11 Master 18 UAT Scenarios & Edge Cases", classification: "Master UAT & Edge Cases Integration Test", fn: runUatMasterTestSuite },
   { name: "Phase 12 MVP Definition of Done & Release Readiness", classification: "DoD & Release Readiness Unit Test", fn: runDodReleaseReadinessTestSuite },
+  { name: "Phase 14 Billing Data Model & Entitlement Foundation", classification: "Billing Data Model & Entitlement Unit Test", fn: runSubscriptionFoundationTestSuite },
+  { name: "Phase 15 Payment Provider Adapter & Webhook Normalization", classification: "Payment Gateway & Webhook Unit Test", fn: runPaymentProviderWebhookTestSuite },
+  { name: "Phase 16 Customer Billing Portal & Subscription Workflows", classification: "Customer Billing Portal & Workflows Unit Test", fn: runCustomerBillingPortalTestSuite },
+  { name: "Phase 16R Subscription Security, Authorization & Entitlement Remediation", classification: "Security & Authorization Unit Test", fn: runSecurityRemediationTestSuite },
+  { name: "Phase 17 Renewal, Dunning & Billing Recovery Engine", classification: "Renewal, Dunning & Recovery Unit Test", fn: runDunningRecoveryLifecycleTestSuite },
+  { name: "Phase 17R Dunning Financial Integrity & E2E Database Recovery", classification: "E2E Database Integration Test", fn: runDunningE2EDatabaseTests },
+  { name: "Phase 18 Admin Billing Control Center, Reconciliation & SaaS Metrics", classification: "Admin Control & SaaS Metrics Integration Suite", fn: runAdminBillingTestSuite },
+  { name: "Phase 18R Admin Billing Integrity and Completeness Remediation", classification: "Financial Integrity & Concurrency Remediation Suite", fn: runPhase18RIntegrityTestSuite },
+  { name: "Phase 18R.1 Final Financial and Serverless Safety Patch", classification: "Financial Safety & Serverless Invariants Suite", fn: runPhase18R1SafetyTestSuite },
+  { name: "Phase 18R.1 Fault Injection & Transaction Boundary Evidence", classification: "Fault Injection & Invariants Suite", fn: runFaultInjectionTestSuite },
+  { name: "Phase 19 Mayar Provider Validation & UAT", classification: "Master 26 Scenarios & Subscription Invariants", fn: runPhase19UatTestSuite },
+  { name: "Phase 19 Backup & Restore Disaster Recovery Integrity", classification: "Disaster Recovery & Financial Invariants Suite", fn: runBackupRestoreIntegrityTestSuite },
+  { name: "Phase 19E-R1 Mayar Webhook Authentication Compatibility", classification: "Mayar Webhook Authentication & Payload Compatibility Suite", fn: runMayarWebhookAuthRepairTestSuite },
 ];
 
 let passed = 0;

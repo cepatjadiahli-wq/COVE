@@ -76,48 +76,53 @@ export function CreateProjectModal({ open, onOpenChange }: CreateProjectModalPro
       selectedClientId = createdClient.id;
     }
 
-    // Call unified intake method
-    coveStore.createProjectWithContract(
-      {
-        project: {
-          projectCode,
-          projectName,
-          clientId: selectedClientId,
-          projectType,
-          location: location || city,
-          city,
-          contractStartDate: startDate,
-          contractFinishDate: finishDate,
-          projectManagerId: "usr-fajar",
-          commercialManagerId: "usr-dimas",
-          financeOwnerId: "usr-rani",
+    // Call unified intake method with Entitlement Guard handling
+    try {
+      coveStore.createProjectWithContract(
+        {
+          project: {
+            projectCode,
+            projectName,
+            clientId: selectedClientId,
+            projectType,
+            location: location || city,
+            city,
+            contractStartDate: startDate,
+            contractFinishDate: finishDate,
+            projectManagerId: "usr-fajar",
+            commercialManagerId: "usr-dimas",
+            financeOwnerId: "usr-rani",
+          },
+          contract: {
+            contractNumber: contractNumber || `CTR-NB-${projectCode}`,
+            contractTitle: contractTitle || `Kontrak Pekerjaan ${projectName}`,
+            originalContractValue: Number(contractValue),
+            paymentMethod: "Monthly Progress",
+          },
+          rule: {
+            cutOffDay: Number(cutOffDay),
+            internalLeadTimeDays: Number(internalLeadTimeDays),
+            reviewSlaDays: Number(reviewSlaDays),
+            paymentTermDays: Number(paymentTermDays),
+            calendarBasis,
+            retentionPercent: Number(retentionPercent),
+            advanceRecoveryRule,
+            advanceRecoveryPercent: Number(advanceRecoveryPercent),
+            taxTreatment,
+            sourceClauseRef,
+            effectiveDate: startDate,
+            notes: "Aturan dasar kontrak disahkan secara resmi saat project intake.",
+          },
         },
-        contract: {
-          contractNumber: contractNumber || `CTR-NB-${projectCode}`,
-          contractTitle: contractTitle || `Kontrak Pekerjaan ${projectName}`,
-          originalContractValue: Number(contractValue),
-          paymentMethod: "Monthly Progress",
-        },
-        rule: {
-          cutOffDay: Number(cutOffDay),
-          internalLeadTimeDays: Number(internalLeadTimeDays),
-          reviewSlaDays: Number(reviewSlaDays),
-          paymentTermDays: Number(paymentTermDays),
-          calendarBasis,
-          retentionPercent: Number(retentionPercent),
-          advanceRecoveryRule,
-          advanceRecoveryPercent: Number(advanceRecoveryPercent),
-          taxTreatment,
-          sourceClauseRef,
-          effectiveDate: startDate,
-          notes: "Aturan dasar kontrak disahkan secara resmi saat project intake.",
-        },
-      },
-      `${currentUser.fullName} (${currentUser.role})`
-    );
+        `${currentUser.fullName} (${currentUser.role})`
+      );
 
-    refreshState();
-    onOpenChange(false);
+      refreshState();
+      onOpenChange(false);
+    } catch (err: any) {
+      const cleanMsg = (err.message || "Gagal membuat proyek.").replace("[ENTITLEMENT_GUARD_REJECTED] ", "");
+      alert(cleanMsg);
+    }
   };
 
   return (

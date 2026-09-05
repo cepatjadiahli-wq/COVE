@@ -18,7 +18,7 @@ import {
   DiscoveryCallRecord,
   FounderMilestoneState,
   OutreachChannel,
-} from "@/lib/db/database-adapter";
+} from "../../lib/db/database-adapter";
 
 export class CoveDataStore {
   public get organizations() {
@@ -181,8 +181,8 @@ export class CoveDataStore {
     return dbAdapter.resolveBlocker(blockerId, resolutionNote);
   }
 
-  public createAction(actionData: any) {
-    return dbAdapter.createAction(actionData);
+  public createAction(actionData: any, actorName?: string) {
+    return dbAdapter.createAction(actionData, actorName);
   }
 
   public resolveAction(
@@ -496,6 +496,103 @@ export class CoveDataStore {
 
   public savePilotScorecard(scorecard: any) {
     return dbAdapter.savePilotScorecard(scorecard);
+  }
+
+  // Phase 14: Billing & Entitlement Foundation
+  public getPlans() {
+    return dbAdapter.getPlans();
+  }
+
+  public getPrices() {
+    return dbAdapter.getPrices();
+  }
+
+  public getPlanEntitlements() {
+    return dbAdapter.getPlanEntitlements();
+  }
+
+  public getSubscriptions(orgId?: string) {
+    return dbAdapter.getSubscriptions(orgId);
+  }
+
+  public getActiveSubscription(orgId?: string) {
+    return dbAdapter.getActiveSubscription(orgId);
+  }
+
+  public getTenantEntitlement(orgId?: string) {
+    return dbAdapter.getTenantEntitlement(orgId);
+  }
+
+  public setSubscriptionStatus(subId: string, newStatus: any, reason?: string, actorId?: string) {
+    return dbAdapter.setSubscriptionStatus(subId, newStatus, reason, actorId);
+  }
+
+  public setSubscriptionOverride(override: any) {
+    return dbAdapter.setSubscriptionOverride(override);
+  }
+
+  public getSubscriptionStatusEvents(subId?: string) {
+    return dbAdapter.getSubscriptionStatusEvents(subId);
+  }
+
+  public getBillingInvoices(orgId?: string) {
+    return dbAdapter.getBillingInvoices(orgId);
+  }
+
+  public getPayments(orgId?: string) {
+    return dbAdapter.getPayments(orgId);
+  }
+
+  public getWebhookEvents(provider?: string) {
+    return dbAdapter.getWebhookEventsAsServiceRole(provider);
+  }
+
+  public findWebhookEvent(provider: string, eventId: string) {
+    return dbAdapter.findWebhookEvent(provider, eventId);
+  }
+
+  public recordWebhookEvent(event: any) {
+    return dbAdapter.recordWebhookEvent(event);
+  }
+
+  public updateWebhookEventStatus(id: string, status: any, errorMessage?: string) {
+    return dbAdapter.updateWebhookEventStatus(id, status, errorMessage);
+  }
+
+  public createBillingInvoice(inv: any) {
+    return dbAdapter.createBillingInvoice(inv);
+  }
+
+  public recordPayment(payment: any) {
+    return dbAdapter.recordPayment(payment);
+  }
+
+  public getEntitlementSnapshots(orgId?: string) {
+    return dbAdapter.getEntitlementSnapshots(orgId);
+  }
+
+  public getBillingAuditLogs(orgId?: string) {
+    return dbAdapter.getBillingAuditLogs(orgId);
+  }
+
+  public activateSubscriptionViaWebhook(params: any) {
+    return dbAdapter.activateSubscriptionViaWebhook(params);
+  }
+
+  public updateSubscriptionPlan(subId: string, newPlanId: any, newInterval?: any, actorId?: string) {
+    return dbAdapter.updateSubscriptionPlan(subId, newPlanId, newInterval, actorId);
+  }
+
+  public cancelSubscriptionAtPeriodEnd(subId: string, reason?: string, actorId?: string) {
+    return dbAdapter.cancelSubscriptionAtPeriodEnd(subId, reason, actorId);
+  }
+
+  public reactivateSubscription(subId: string, actorId?: string) {
+    return dbAdapter.reactivateSubscription(subId, actorId);
+  }
+
+  public archiveProjectsExcept(orgId: string, keepActiveProjectIds: string[]) {
+    return dbAdapter.archiveProjectsExcept(orgId, keepActiveProjectIds);
   }
 }
 

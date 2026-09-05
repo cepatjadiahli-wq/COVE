@@ -111,6 +111,7 @@ export function SmartDocumentViewer({
             className="origin-center"
           >
             {document.fileUrl ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
               <img
                 src={document.fileUrl}
                 alt={document.title}

@@ -54,7 +54,7 @@ export function transitionClaimStage(req: TransitionStageRequest): TransitionSta
   const isBackward = targetConfig.order < currentConfig.order && !targetConfig.isException;
   const isException = targetConfig.isException || currentConfig.isException;
 
-  const requiresReason = isBackward || isException;
+  const requiresReason = Boolean(isBackward || isException);
 
   if (requiresReason && (!req.reason || req.reason.trim().length === 0)) {
     return {

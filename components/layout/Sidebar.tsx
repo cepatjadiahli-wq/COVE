@@ -16,6 +16,7 @@ import {
   Rocket,
   Compass,
   Users,
+  CreditCard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTenant } from "./TenantProvider";
@@ -118,6 +119,18 @@ export function Sidebar() {
         <div className="pt-5 px-3 pb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
           {t("nav.system", "Sistem")}
         </div>
+        <Link
+          href="/billing"
+          className={cn(
+            "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+            pathname === "/billing"
+              ? "bg-slate-900 text-white font-semibold shadow-xs"
+              : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+          )}
+        >
+          <CreditCard className={cn("h-4 w-4 shrink-0", pathname === "/billing" ? "text-white" : "text-slate-500")} />
+          <span>{t("nav.billing", "Langganan & Billing")}</span>
+        </Link>
         <Link
           href="/settings"
           className={cn(

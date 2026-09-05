@@ -11,7 +11,7 @@ export interface MayarPaymentRequest {
   customerMobile?: string;
   description?: string;
   redirectUrl?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface MayarPaymentResponse {
@@ -43,7 +43,7 @@ export interface MayarWebhookPayload {
       mobile?: string;
     };
     description?: string;
-    metadata?: Record<string, any>;
+    metadata?: Record<string, unknown>;
     createdAt?: string;
   };
 }
@@ -83,26 +83,70 @@ export async function createMayarPaymentLink(
   return data;
 }
 
+import crypto from "crypto";
+
+export const MAYAR_AUTH_HEADER_CANDIDATES = [
+  "x-mayar-token",
+  "x-mayar-signature",
+  "x-mayar-secret",
+  "x-mayar-webhook-token",
+  "authorization",
+  "mayar-token",
+  "mayar-signature",
+  "x-callback-token",
+  "x-webhook-token",
+  "x-api-key",
+  "token",
+] as const;
+
 /**
- * Validates Mayar Webhook signature / security token
+ * Constant-time comparison between two strings to prevent timing side-channel attacks
+ */
+export function safeTimingEqual(a: string, b: string): boolean {
+  try {
+    const bufA = Buffer.from(a.trim(), "utf-8");
+    const bufB = Buffer.from(b.trim(), "utf-8");
+    if (bufA.length !== bufB.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates Mayar Webhook signature / security token against MAYAR_WEBHOOK_SECRET
+ * using constant-time comparison.
  */
 export function verifyMayarWebhookToken(
-  tokenHeader: string | null,
+  tokenHeader: string | null | undefined,
   secretEnv: string | undefined
 ): boolean {
-  if (!secretEnv) {
-    // If not configured in development, allow for testing
-    console.warn("MAYAR_WEBHOOK_SECRET is not configured in environment variables.");
-    return true;
-  }
-
-  if (!tokenHeader) {
+  if (!secretEnv || secretEnv.trim().length === 0) {
+    // Fail-closed in production or when explicitly configured as MAYAR provider
+    if (process.env.NODE_ENV === "production" || process.env.PAYMENT_PROVIDER === "MAYAR") {
+      console.error("❌ MAYAR_WEBHOOK_SECRET is not configured. Webhook rejected fail-closed.");
+      return false;
+    }
+    console.warn("MAYAR_WEBHOOK_SECRET is not configured in development environment variables.");
     return false;
   }
 
-  // Support Bearer token or direct token string
-  const cleanHeader = tokenHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!tokenHeader || typeof tokenHeader !== "string") {
+    return false;
+  }
+
+  // Support Bearer token, Token prefix, or direct raw token string
+  const cleanHeader = tokenHeader
+    .replace(/^Bearer\s+/i, "")
+    .replace(/^Token\s+/i, "")
+    .trim();
   const cleanSecret = secretEnv.trim();
 
-  return cleanHeader === cleanSecret;
+  if (cleanHeader.length === 0) {
+    return false;
+  }
+
+  return safeTimingEqual(cleanHeader, cleanSecret);
 }

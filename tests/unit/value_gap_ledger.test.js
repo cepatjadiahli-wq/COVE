@@ -145,11 +145,11 @@ function runValueGapLedgerTestSuite() {
   // TEST 2: LED-003 (Working-Day vs Calendar-Day Aging Calculation)
   // ===========================================================================
   console.log("Testing LED-003: Working days vs calendar days aging...");
-  // Friday Aug 1, 2026 to Monday Aug 4, 2026
+  // Friday Aug 7, 2026 to Monday Aug 10, 2026
   // Calendar days: 3 days (Fri->Sat, Sat->Sun, Sun->Mon)
   // Working days: 1 day (Fri->Mon only 1 weekday elapsed: Monday)
-  const fri = "2026-08-01T08:00:00Z";
-  const mon = "2026-08-04T08:00:00Z";
+  const fri = "2026-08-07T08:00:00Z";
+  const mon = "2026-08-10T08:00:00Z";
 
   const calendarAge = calculateAgingDays(fri, "CALENDAR_DAYS", mon);
   const workingAge = calculateAgingDays(fri, "WORKING_DAYS", mon);

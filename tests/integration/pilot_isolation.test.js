@@ -5,7 +5,13 @@
  */
 
 const assert = require("assert");
-const { dbAdapter } = require("../../lib/db/database-adapter");
+const path = require("path");
+const jiti = require("jiti")(path.resolve(__filename), {
+  alias: {
+    "@": path.resolve(__dirname, "../../"),
+  },
+});
+const { dbAdapter } = jiti("../../lib/db/database-adapter");
 
 function runPilotIsolationTests() {
   console.log("▶ Running tests/integration/pilot_isolation.test.js (Classification: Real Outreach Operating System)...");

@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS public.organizations (
     subscription_status VARCHAR(50) DEFAULT 'active',   -- 'active', 'past_due', 'cancelled', 'trialing'
     subscription_expires_at TIMESTAMPTZ,
     mayar_customer_id VARCHAR(100),
+    active_subscription_id UUID,
+    billing_email VARCHAR(255),
+    billing_phone VARCHAR(50),
+    npwp_number VARCHAR(50),
+    tax_invoice_address TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -724,5 +729,283 @@ DROP POLICY IF EXISTS pilot_scorecards_isolation ON public.pilot_scorecards;
 CREATE POLICY pilot_scorecards_isolation ON public.pilot_scorecards
     FOR ALL
     USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
+-- ==============================================================================
+-- 29. SUBSCRIPTION, BILLING, AND ENTITLEMENT FOUNDATION (PHASE 14)
+-- ==============================================================================
+
+-- 29.1 BILLING CUSTOMERS
+CREATE TABLE IF NOT EXISTS public.billing_customers (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+    provider VARCHAR(50) NOT NULL,
+    provider_customer_id VARCHAR(150) NOT NULL,
+    default_payment_method VARCHAR(50),
+    payment_method_masked VARCHAR(50),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_billing_customer_provider UNIQUE (org_id, provider)
+);
+
+-- 29.2 PLANS
+CREATE TABLE IF NOT EXISTS public.plans (
+    id VARCHAR(50) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    tier_level INT NOT NULL DEFAULT 1,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    is_public BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.3 PRICES
+CREATE TABLE IF NOT EXISTS public.prices (
+    id VARCHAR(50) PRIMARY KEY,
+    plan_id VARCHAR(50) NOT NULL REFERENCES public.plans(id),
+    currency VARCHAR(10) NOT NULL DEFAULT 'IDR',
+    amount NUMERIC(18, 2) NOT NULL,
+    billing_interval VARCHAR(20) NOT NULL,
+    effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    effective_until TIMESTAMPTZ,
+    is_current BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.4 PLAN ENTITLEMENTS
+CREATE TABLE IF NOT EXISTS public.plan_entitlements (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id VARCHAR(50) NOT NULL REFERENCES public.plans(id),
+    max_active_projects INT NOT NULL DEFAULT 1,
+    max_users INT NOT NULL DEFAULT 10,
+    import_enabled BOOLEAN NOT NULL DEFAULT true,
+    value_gap_ledger_enabled BOOLEAN NOT NULL DEFAULT true,
+    claim_readiness_enabled BOOLEAN NOT NULL DEFAULT true,
+    action_queue_enabled BOOLEAN NOT NULL DEFAULT true,
+    portfolio_review_level VARCHAR(50) NOT NULL DEFAULT 'SINGLE',
+    roi_ledger_enabled BOOLEAN NOT NULL DEFAULT true,
+    audit_level VARCHAR(50) NOT NULL DEFAULT 'STANDARD',
+    email_digest_enabled BOOLEAN NOT NULL DEFAULT true,
+    export_enabled BOOLEAN NOT NULL DEFAULT true,
+    api_enabled BOOLEAN NOT NULL DEFAULT false,
+    sso_enabled BOOLEAN NOT NULL DEFAULT false,
+    storage_limit_mb INT NOT NULL DEFAULT 15360,
+    support_tier VARCHAR(50) NOT NULL DEFAULT 'STANDARD',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.5 SUBSCRIPTIONS
+CREATE TABLE IF NOT EXISTS public.subscriptions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+    plan_id VARCHAR(50) NOT NULL REFERENCES public.plans(id),
+    price_id VARCHAR(50) NOT NULL REFERENCES public.prices(id),
+    provider VARCHAR(50) NOT NULL DEFAULT 'XENDIT',
+    provider_subscription_id VARCHAR(150),
+    billing_interval VARCHAR(20) NOT NULL DEFAULT 'MONTHLY',
+    status VARCHAR(50) NOT NULL DEFAULT 'DRAFT',
+    current_period_start TIMESTAMPTZ NOT NULL,
+    current_period_end TIMESTAMPTZ NOT NULL,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT false,
+    canceled_at TIMESTAMPTZ,
+    churn_reason TEXT,
+    grace_period_end TIMESTAMPTZ,
+    next_billing_date TIMESTAMPTZ,
+    currency VARCHAR(10) NOT NULL DEFAULT 'IDR',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.6 SUBSCRIPTION ITEMS
+CREATE TABLE IF NOT EXISTS public.subscription_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    subscription_id UUID NOT NULL REFERENCES public.subscriptions(id) ON DELETE CASCADE,
+    item_type VARCHAR(50) NOT NULL,
+    unit_price NUMERIC(18, 2) NOT NULL,
+    quantity INT NOT NULL DEFAULT 1,
+    subtotal NUMERIC(18, 2) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.7 SUBSCRIPTION STATUS EVENTS
+CREATE TABLE IF NOT EXISTS public.subscription_status_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    subscription_id UUID NOT NULL REFERENCES public.subscriptions(id) ON DELETE CASCADE,
+    from_status VARCHAR(50) NOT NULL,
+    to_status VARCHAR(50) NOT NULL,
+    reason TEXT NOT NULL,
+    source VARCHAR(50) NOT NULL,
+    actor_id VARCHAR(100),
+    correlation_id VARCHAR(150),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.8 BILLING INVOICES
+CREATE TABLE IF NOT EXISTS public.billing_invoices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+    subscription_id UUID REFERENCES public.subscriptions(id) ON DELETE SET NULL,
+    invoice_number VARCHAR(100) UNIQUE NOT NULL,
+    amount_subtotal NUMERIC(18, 2) NOT NULL,
+    discount_amount NUMERIC(18, 2) NOT NULL DEFAULT 0,
+    tax_amount NUMERIC(18, 2) NOT NULL DEFAULT 0,
+    amount_total NUMERIC(18, 2) NOT NULL,
+    currency VARCHAR(10) NOT NULL DEFAULT 'IDR',
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+    due_date TIMESTAMPTZ NOT NULL,
+    paid_at TIMESTAMPTZ,
+    pdf_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.9 PAYMENTS
+CREATE TABLE IF NOT EXISTS public.payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+    billing_invoice_id UUID REFERENCES public.billing_invoices(id),
+    provider VARCHAR(50) NOT NULL,
+    provider_payment_id VARCHAR(150) NOT NULL,
+    amount NUMERIC(18, 2) NOT NULL,
+    fee_amount NUMERIC(18, 2) NOT NULL DEFAULT 0,
+    net_amount NUMERIC(18, 2) NOT NULL,
+    payment_method VARCHAR(50) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'SUCCEEDED',
+    paid_at TIMESTAMPTZ NOT NULL,
+    receipt_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_payment_provider_id UNIQUE (provider, provider_payment_id)
+);
+
+-- 29.10 PAYMENT ATTEMPTS
+CREATE TABLE IF NOT EXISTS public.payment_attempts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    billing_invoice_id UUID NOT NULL REFERENCES public.billing_invoices(id) ON DELETE CASCADE,
+    attempt_number INT NOT NULL DEFAULT 1,
+    status VARCHAR(50) NOT NULL,
+    gateway_error_code VARCHAR(100),
+    gateway_error_message TEXT,
+    attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 29.11 WEBHOOK EVENTS
+CREATE TABLE IF NOT EXISTS public.webhook_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    provider VARCHAR(50) NOT NULL,
+    event_id VARCHAR(150) NOT NULL,
+    event_type VARCHAR(100) NOT NULL,
+    raw_payload JSONB NOT NULL,
+    processing_status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+    error_message TEXT,
+    retry_count INT NOT NULL DEFAULT 0,
+    processed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_webhook_provider_event UNIQUE (provider, event_id)
+);
+
+-- 29.12 ENTITLEMENT SNAPSHOTS
+CREATE TABLE IF NOT EXISTS public.entitlement_snapshots (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+    subscription_id UUID REFERENCES public.subscriptions(id) ON DELETE SET NULL,
+    max_active_projects INT NOT NULL,
+    max_users INT NOT NULL,
+    features JSONB NOT NULL,
+    effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    effective_until TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.13 USAGE RECORDS
+CREATE TABLE IF NOT EXISTS public.usage_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+    metric_name VARCHAR(50) NOT NULL,
+    current_value NUMERIC(18, 2) NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 29.14 SUBSCRIPTION OVERRIDES
+CREATE TABLE IF NOT EXISTS public.subscription_overrides (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+    granted_by VARCHAR(100) NOT NULL,
+    reason TEXT NOT NULL,
+    override_max_projects INT,
+    override_features JSONB,
+    starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.15 DISCOUNTS
+CREATE TABLE IF NOT EXISTS public.discounts (
+    id VARCHAR(50) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    discount_type VARCHAR(20) NOT NULL,
+    discount_value NUMERIC(18, 2) NOT NULL,
+    applicable_plan_id VARCHAR(50) REFERENCES public.plans(id),
+    max_redemptions INT,
+    current_redemptions INT NOT NULL DEFAULT 0,
+    valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    valid_until TIMESTAMPTZ NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.16 BILLING AUDIT LOGS
+CREATE TABLE IF NOT EXISTS public.billing_audit_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id UUID REFERENCES public.organizations(id) ON DELETE SET NULL,
+    actor_id VARCHAR(100) NOT NULL,
+    actor_role VARCHAR(50) NOT NULL,
+    action VARCHAR(100) NOT NULL,
+    target_entity VARCHAR(50) NOT NULL,
+    target_id VARCHAR(150) NOT NULL,
+    before_state JSONB,
+    after_state JSONB,
+    ip_address VARCHAR(50),
+    user_agent TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 29.17 RLS ON BILLING TABLES
+ALTER TABLE public.billing_customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subscription_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subscription_status_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.billing_invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.webhook_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.entitlement_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.usage_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subscription_overrides ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.billing_audit_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY billing_customers_isolation ON public.billing_customers
+    FOR ALL USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
+CREATE POLICY subscriptions_isolation ON public.subscriptions
+    FOR ALL USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
+CREATE POLICY billing_invoices_isolation ON public.billing_invoices
+    FOR ALL USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
+CREATE POLICY payments_isolation ON public.payments
+    FOR ALL USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
+CREATE POLICY entitlement_snapshots_isolation ON public.entitlement_snapshots
+    FOR ALL USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
+CREATE POLICY usage_records_isolation ON public.usage_records
+    FOR ALL USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
+CREATE POLICY subscription_overrides_isolation ON public.subscription_overrides
+    FOR ALL USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
+CREATE POLICY billing_audit_logs_isolation ON public.billing_audit_logs
+    FOR ALL USING (org_id = public.get_user_org_id() OR auth.uid() IS NULL);
+
 
 

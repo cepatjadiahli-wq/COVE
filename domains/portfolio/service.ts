@@ -611,3 +611,26 @@ export function generatePilotComparison(
     },
   ];
 }
+
+// Compatibility Aliases
+export function calculateRoiLedger(
+  claimsOrInput: any,
+  actions?: any[],
+  invoices?: any[],
+  cashReceipts?: any[]
+): any {
+  if (claimsOrInput && !Array.isArray(claimsOrInput) && typeof claimsOrInput === "object") {
+    const baseline = claimsOrInput.baselineExposure || 0;
+    const current = claimsOrInput.currentObservedExposure || 0;
+    const levelA = claimsOrInput.levelAActionResolved || 0;
+    return {
+      levelAActionLinkedRecovery: levelA,
+      observedTotalReduction: Math.max(0, baseline - current),
+      annualFinancingRatePercent: claimsOrInput.annualFinancingRatePercent || 11,
+    };
+  }
+  return generateRoiLedger(claimsOrInput || [], actions || [], invoices || [], cashReceipts || []);
+}
+export const calculatePortfolioSummary = calculatePortfolioStageSummary;
+export const lockBaselineSnapshot = validateBaselineLock;
+

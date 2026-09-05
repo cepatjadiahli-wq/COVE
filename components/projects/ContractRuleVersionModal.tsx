@@ -29,7 +29,7 @@ export function ContractRuleVersionModal({
   currentActiveRule,
   onSuccess,
 }: ContractRuleVersionModalProps) {
-  const { currentUser, refreshState, hasPermission } = useTenant();
+  const { currentOrg, currentUser, refreshState, hasPermission } = useTenant();
   const { language } = useLanguage();
 
   const [cutOffDay, setCutOffDay] = useState(currentActiveRule?.cutOffDay || 25);
@@ -39,21 +39,22 @@ export function ContractRuleVersionModal({
   const [calendarBasis, setCalendarBasis] = useState<"CALENDAR_DAYS" | "WORKING_DAYS">(
     currentActiveRule?.calendarBasis || "CALENDAR_DAYS"
   );
-  const [retentionPercent, setRetentionPercent] = useState(currentActiveRule?.retentionPercent || 5.0);
+  const [retentionPercent, setRetentionPercent] = useState(currentActiveRule?.retentionPercent ?? 5);
   const [advanceRecoveryRule, setAdvanceRecoveryRule] = useState<"PROPORTIONAL" | "FIXED_PERCENT" | "NONE">(
     currentActiveRule?.advanceRecoveryRule || "PROPORTIONAL"
   );
   const [advanceRecoveryPercent, setAdvanceRecoveryPercent] = useState(
-    currentActiveRule?.advanceRecoveryPercent || 10.0
+    currentActiveRule?.advanceRecoveryPercent ?? 20
   );
-  const [taxTreatment, setTaxTreatment] = useState(
-    currentActiveRule?.taxTreatment || "PPN 11% & PPh Final 1.75% (Pasal 12 SPK)"
+  const [taxTreatment, setTaxTreatment] = useState<string>(
+    currentActiveRule?.taxTreatment || "INCLUDE_PPN_11"
   );
-  const [sourceClauseRef, setSourceClauseRef] = useState(
-    currentActiveRule ? `Addendum Klausul Perubahan` : "Pasal 8 SPK Utama"
+  const [sourceClauseRef, setSourceClauseRef] = useState(currentActiveRule?.sourceClauseRef || "Pasal 7 Ayat 2");
+  const [effectiveDate, setEffectiveDate] = useState(
+    currentActiveRule?.effectiveDate || new Date().toISOString().split("T")[0]
   );
-  const [effectiveDate, setEffectiveDate] = useState(new Date().toISOString().split("T")[0]);
   const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const canApproveDirectly = currentUser.role === "OWNER" || currentUser.role === "ADMIN";
 
@@ -65,9 +66,14 @@ export function ContractRuleVersionModal({
       return;
     }
 
+    if (!currentOrg?.id) {
+      alert("Organisasi tidak ditemukan. Mohon muat ulang halaman.");
+      return;
+    }
+
     const proposed = coveStore.proposeContractRuleVersion(
       {
-        orgId: "org-nusantara-01",
+        orgId: currentOrg.id,
         projectId,
         contractId,
         cutOffDay: Number(cutOffDay),

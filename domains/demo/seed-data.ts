@@ -13,13 +13,14 @@ export interface DemoOrg {
 
 export interface DemoProfile {
   id: string;
+  orgId?: string;
   fullName: string;
   email: string;
   phone: string;
   role: Role;
   jobTitle: string;
   avatarUrl?: string;
-  status?: "ACTIVE" | "DEACTIVATED";
+  status?: "ACTIVE" | "DEACTIVATED" | "INVITED";
   mfaEnabled?: boolean;
   assignedProjectIds?: string[];
   lastSessionRevokedAt?: string;
@@ -37,6 +38,7 @@ export interface DemoClient {
 
 export interface DemoProject {
   id: string;
+  orgId?: string;
   clientId: string;
   projectCode: string;
   projectName: string;
@@ -210,6 +212,7 @@ export interface DemoAction {
   escalatedToRole?: string;
   resolvedAt?: string;
   resolution?: string;
+  resolutionNotes?: string;
   outcomeType?: OutcomeType;
   outcomeValue?: number;
   createdAt: string;
@@ -1479,7 +1482,7 @@ export const INITIAL_DATA_ACCEPTANCE_SEEDS: DemoDataAcceptanceItem[] = [
     orgId: "org-nusantara-01",
     projectId: "prj-meridian",
     itemKey: "DATA_RETENTION_AGREED",
-    label: "Ketentuan Retensi & Ekspor Pasca Pilot Disepakati",
+    itemLabel: "Ketentuan Retensi & Ekspor Pasca Pilot Disepakati",
     description: "Hak unduh seluruh data (Grace period) saat pilot selesai telah disepakati bersama.",
     status: "VERIFIED",
     verifiedByName: "Bambang Wijaya",

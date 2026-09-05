@@ -325,3 +325,133 @@ flowchart TD
     - Seluruh **100 dari 100 requirements PRD v1.0 (100%)** berstatus COMPLETE.
 * **Aturan Khusus Dipatuhi:** **Deployment ke production tetap memerlukan perintah terpisah dari pengguna.** Sistem siap untuk peluncuran terkontrol (*Controlled Customer Pilot Launch*).
 * **Exit Status:** **SELURUH 12 PHASE PENGEMBANGAN SELESAI 100%!**
+
+---
+
+### PHASE 13 — COVE Subscription Product Audit [STATUS: SELESAI]
+* **Status:** **SELESAI (COMPLETE)** (4 September 2026)
+* **Tujuan:** Mengaudit kesenjangan model subscription B2B SaaS konstruksi bergaya Netflix berdasar PRD v1.0, merancang blueprint arsitektur penagihan, dan menetapkan fondasi migrasi komersial.
+* **Cakupan Deliverables yang Diselesaikan:**
+  - `COVE_SUBSCRIPTION_BILLING_BLUEPRINT_v1.0.md`: Blueprint komprehensif penagihan B2B SaaS bernilai tinggi.
+  - 9 Dokumen Kendali Audit di `docs/`:
+    1. `docs/COVE_SUBSCRIPTION_CURRENT_STATE_AUDIT.md`
+    2. `docs/COVE_SUBSCRIPTION_TRACEABILITY_MATRIX.md` (35 requirement subscription)
+    3. `docs/COVE_SUBSCRIPTION_ENTITLEMENT_MATRIX.md`
+    4. `docs/COVE_SUBSCRIPTION_STATE_MACHINE.md` (11 status langganan)
+    5. `docs/COVE_PAYMENT_PROVIDER_DECISION.md` (arsitektur adapter multi-gateway)
+    6. `docs/COVE_SUBSCRIPTION_RISK_REGISTER.md` (12 risiko operasional dan mitigasi)
+    7. `docs/COVE_SUBSCRIPTION_MIGRATION_PLAN.md` (skema migrasi aditif tanpa downtime)
+    8. `docs/COVE_SUBSCRIPTION_TEST_BASELINE.md` (26 skenario UAT subscription)
+    9. `docs/COVE_PHASE_14_IMPLEMENTATION_PLAN.md` (rencana detail eksekusi fondasi)
+* **Exit Status:** Lulus 100%. Fondasi audit tervalidasi dan disetujui untuk eksekusi Phase 14.
+
+---
+
+### PHASE 14 — Billing Data Model dan Entitlement Foundation [STATUS: SELESAI]
+* **Status:** **SELESAI (COMPLETE)** (4 September 2026)
+* **Tujuan:** Membangun fondasi data model penagihan 16 tabel aditif, price versioning, lifecycle state machine 11 status, dan server-side entitlement mutation guards.
+* **Cakupan Pekerjaan yang Diselesaikan:**
+  1. **Database Migration & Canonical Schema (Task 14.1):**
+     - `supabase/migrations/00006_subscription_foundation.sql`: 16 tabel baru (`billing_customers`, `plans`, `prices`, `plan_entitlements`, `subscriptions`, `subscription_items`, `subscription_status_events`, `billing_invoices`, `payments`, `payment_attempts`, `webhook_events`, `entitlement_snapshots`, `usage_records`, `subscription_overrides`, `discounts`, `billing_audit_logs`) + 5 kolom pada `organizations` (`active_subscription_id`, `billing_email`, `billing_phone`, `npwp_number`, `tax_invoice_address`).
+     - `supabase/schema.sql`: Sinkronisasi skema kanonikal lengkap dengan seluruh RLS multi-tenant policies.
+  2. **Billing Types & Seed Catalog (Task 14.2):**
+     - `domains/billing/types.ts`: Interface TypeScript untuk seluruh 16 entitas penagihan, 11 status siklus hidup, dan interval penagihan.
+     - `domains/billing/seed-data.ts`: Inisialisasi katalog 4 paket B2B (`b2b_pilot`, `b2b_core`, `b2b_scale`, `b2b_enterprise`), Project Add-on (`b2b_addon_project` Rp 750.000/bln), paket legacy (`lifetime_799k`), versi harga terstruktur (`prices`), kuota entitlement (`plan_entitlements`), dan backfill organisasi `org-nusantara-01`.
+  3. **Server-Side Entitlement Guard Engine (Task 14.3):**
+     - `domains/entitlement/types.ts` & `domains/entitlement/service.ts`:
+       - `evaluateTenantEntitlement`: Evaluasi hak akses berbasis status (`ACTIVE`/`PILOT_ACTIVE` -> mutasi aktif; `PAST_DUE` dalam grace period 7 hari -> mutasi aktif dengan notifikasi dunning; `PAST_DUE` pasca-grace / `READ_ONLY` / `SUSPENDED` / `EXPIRED` -> mutasi diblokir).
+       - Open Data Guarantee (PRD 28.1): Ekspor data JSON/CSV selalu diizinkan (`canExport = true`) bahkan saat akun dibekukan/read-only.
+       - Evaluasi manual override berbatas waktu (`subscription_overrides`).
+  4. **Mutation Guard Integration (Task 14.4):**
+     - `lib/db/database-adapter.ts`: Integrasi `guardMutation` ke dalam `createProjectWithContract`. Memblokir pembuatan proyek jika kuota paket habis (`QUOTA_EXCEEDED`) atau akun berstatus `READ_ONLY`/`SUSPENDED`.
+     - `domains/store/persistent-store.ts`: Proxy methods untuk billing dan entitlement querying.
+     - `components/projects/CreateProjectModal.tsx`: Penanganan error ramah jika pembuatan proyek ditolak guard.
+  5. **Subscription Lifecycle State Machine Domain Engine (Task 14.5):**
+     - `domains/subscription/types.ts` & `domains/subscription/lifecycle.ts`: Graph transisi formal `ALLOWED_TRANSITIONS` untuk 11 status langganan, validasi transisi, dan pencatatan audit event otomatis (`SubscriptionStatusEvent`).
+  6. **Automated Test Suite 23 (Task 14.6):**
+     - `tests/unit/subscription_foundation.test.js` (Suite 23): 5 grup pengujian mencakup integritas katalog, evaluasi entitlement status, penegakan kuota proyek di server, validasi state machine, dan time-bound manual override.
+     - Terdaftar di `tests/runner.js` dan lulus 100% via test runner.
+* **Exit Status:** Lulus 100%. Kompilasi `next build` lolos tanpa error. Menunggu otorisasi "LANJUT PHASE 15".
+
+---
+
+### PHASE 15 — Payment Provider Adapter & Webhook Normalization Engine [STATUS: SELESAI]
+* **Status:** **SELESAI (COMPLETE)** (4 September 2026)
+* **Tujuan:** Membangun antarmuka gateway generik (Xendit, Mayar, Mock), normalisasi webhook multi-gateway, verifikasi signature kriptografis, penegakan idempotensi tanpa double-debit, eliminasi celah redirect bypass URL, dan pemisahan total billing dari klaim fisik konstruksi.
+* **Cakupan Pekerjaan yang Diselesaikan:**
+  1. **Generic Payment Provider Adapter Interface & Implementations:**
+     - `domains/billing/provider-adapter.ts`: Interface standar `PaymentProviderAdapter` (10 fungsi kontrak generik) dan definisi `NormalizedWebhookEvent` (10 event baku).
+     - `domains/billing/adapters/mock-adapter.ts`: In-memory sandbox adapter dengan deterministik ID, validasi token `MOCK_WEBHOOK_SECRET`, dan simulasi siklus langganan.
+     - `domains/billing/adapters/xendit-adapter.ts`: Integrasi Xendit Recurring Payments v2 / Invoices dengan validasi `x-callback-token`.
+     - `domains/billing/adapters/mayar-adapter.ts`: Integrasi Mayar Payment Link dengan validasi token dan deterministik ID.
+     - `domains/billing/adapters/index.ts`: Factory `getPaymentAdapter(provider)`.
+  2. **Webhook Processing & Idempotency Engine:**
+     - `domains/billing/webhook-service.ts`: Eksekusi 11 langkah standar: verifikasi kriptografis, deduplikasi `(provider, event_id)` idempotensi, penyimpanan payload mentah, normalisasi event, transaksi atomik aktivasi langganan, dan penanganan kegagalan terstruktur.
+  3. **Lapisan Persistensi Webhook & Billing:**
+     - `lib/db/database-adapter.ts`: Method `recordWebhookEvent`, `findWebhookEvent`, `updateWebhookEventStatus`, `createBillingInvoice`, `recordPayment`, `recordPaymentAttempt`, `createEntitlementSnapshot`, dan `activateSubscriptionViaWebhook`.
+     - `domains/store/persistent-store.ts`: Proksi data store `CoveDataStore` untuk seluruh entitas penagihan.
+  4. **Refactoring API Routes & Eliminasi Celah Redirect Bypass:**
+     - `app/api/payment/checkout/route.ts`: Mengeliminasi parameter bypass `payment_success=true`. Redirect URL kini mengarah ke status pemrosesan (`/billing/status`), dengan akses tenant HANYA aktif setelah webhook server terverifikasi. Mendukung paket B2B resmi (`b2b_pilot`, `b2b_core`, `b2b_scale`, `b2b_enterprise`).
+     - `app/api/webhooks/mayar/route.ts`: Didelegasikan ke `processWebhookEvent("MAYAR")` dan dibersihkan total dari manipulasi tabel klaim progres fisik konstruksi.
+     - `app/api/webhooks/[provider]/route.ts`: Endpoint terpadu untuk seluruh penyedia gateway (`/api/webhooks/xendit`, `/api/webhooks/mayar`, `/api/webhooks/mock`).
+  5. **Automated Test Suite 24 & Verifikasi Produksi:**
+     - `tests/unit/payment_provider_webhook.test.js` (Suite 24): 6 skenario pengujian unit & integrasi (Interface compliance, signature verification, idempotency zero-double-debit, payload normalization, atomic activation, elimination of redirect bypass) **LULUS 100%**.
+     - Terdaftar di `tests/runner.js`.
+     - `npx next build` **Compiled successfully in 3.0s (21 static routes, 3 dynamic routes, 0 errors)**.
+* **Exit Status:** Lulus 100%. Fondasi checkout gateway dan webhook normalizer telah aktif dan aman. Menunggu otorisasi "LANJUT PHASE 16".
+
+---
+
+### PHASE 16 — Self-Service Customer Billing Portal & Subscription Workflows [STATUS: SELESAI]
+* **Status:** **SELESAI (COMPLETE)** (4 September 2026)
+* **Tujuan:** Membangun Customer Billing Portal mandiri, kalkulasi proration matematis, alur downgrade dengan pemilihan proyek aktif dan pengarsipan non-destruktif, pembatalan langganan di akhir periode (*cancel at period end*) dengan survei churn terstruktur, reaktivasi reversibel, penegakan Open Data Guarantee (PRD 28.1), serta navigasi UI terintegrasi.
+* **Requirement Terkait:** `COVE_SUBSCRIPTION_BILLING_BLUEPRINT_v1.0.md` Bagian 3.11, 8.2, 12.1, 12.2, 13.1, dan PRD Section 28.1.
+* **Cakupan Pekerjaan yang Diselesaikan:**
+  1. **Proration Calculation Engine (`domains/subscription/proration.ts`):**
+     - Perhitungan presisi proporsional harian siklus penagihan: cycle days, remaining days, daily rates.
+     - Komputasi kredit sisa plan lama, biaya prorata plan baru, dan nominal bersih terutang (*net payable IDR*).
+     - Aturan proteksi: *no negative billing* pada downgrade (kredit disimpan sebagai unused credit).
+  2. **Downgrade Impact & Project Selection Engine (`domains/subscription/downgrade.ts`):**
+     - Evaluasi kuota proyek aktif terhadap target plan (`evaluateDowngradeImpact`).
+     - Validasi pemilihan proyek aktif pelanggan (`validateDowngradeProjectSelection`).
+     - Pengarsipan proyek non-terpilih secara aman dan non-destruktif (`archiveProjectsExcept` dengan status `archived`), menjaga seluruh kontrak, klaim BAP, dan riwayat invoice tetap utuh tanpa kehilangan data.
+  3. **Lapisan Database Adapter Workflows (`lib/db/database-adapter.ts`):**
+     - `updateSubscriptionPlan`: Penggantian plan seketika dengan pembuatan invoice prorata, snapshot entitlement baru, dan audit log.
+     - `cancelSubscriptionAtPeriodEnd`: Penjadwalan pembatalan pada `current_period_end` dengan status `CANCEL_AT_PERIOD_END`, mempertahankan akses mutasi penuh hingga siklus berakhir.
+     - `reactivateSubscription`: Pemulihan status `ACTIVE` seketika sebelum periode berakhir.
+     - `archiveProjectsExcept`: Pengarsipan atomik proyek non-terpilih tanpa merusak referensi relasional.
+  4. **Subscription Workflow Service (`domains/subscription/workflow-service.ts`):**
+     - `getCustomerBillingDetails`: Agregasi profil billing lengkap, kuota terpakai (proyek aktif, pengguna), status langganan, dan riwayat faktur.
+     - `previewPlanChange`: Simulasi interaktif kalkulasi proration dan dampak downgrade sebelum eksekusi.
+     - `executePlanChange`: Koordinasi pergantian plan, pembuatan invoice prorata pada upgrade, dan pengarsipan proyek pada downgrade.
+     - `executeCancellationAtPeriodEnd` & `executeReactivation`.
+  5. **Customer Billing API Endpoints (`app/api/billing/*`):**
+     - `GET /api/billing/subscription`: Profil billing pelanggan, kuota aktif, dan riwayat faktur.
+     - `POST /api/billing/proration`: Kalkulasi proration & downgrade preview secara real-time.
+     - `POST /api/billing/change-plan`: Eksekusi pergantian plan (upgrade/downgrade).
+     - `POST /api/billing/cancel`: Penjadwalan pembatalan dengan alasan exit survey dan catatan.
+     - `POST /api/billing/reactivate`: Reaktivasi reversibel langganan sebelum akhir periode.
+  6. **Customer Billing Portal UI & Navigasi (`app/(app)/billing/page.tsx`):**
+     - Menu "Langganan & Billing" dengan ikon `CreditCard` di `components/layout/Sidebar.tsx` pada grup "Sistem".
+     - Halaman portal lengkap:
+       - Header ringkasan plan aktif & badge status (ACTIVE / CANCEL_AT_PERIOD_END).
+       - Bar progress dinamis penggunaan kuota proyek aktif dan pengguna terdaftar.
+       - Matriks ringkasan fitur paket aktif (Multi-project, BAP generator, cash-flow ledger, role RBAC).
+       - Tabel riwayat faktur dan kwitansi pembayaran dengan status dan simulasi PDF.
+       - Kartu Open Data Guarantee (PRD 28.1) dengan tautan langsung unduh backup JSON lengkap.
+       - Modal Ganti Paket Interaktif dengan kalkulasi proration live dan checklist pemilihan proyek jika downgrade.
+       - Modal Pembatalan Mandiri dengan survei alasan churn terstruktur.
+       - Banner reaktivasi 1-klik jika paket dalam status pembatalan terjadwal.
+  7. **Automated Unit Test Suite 25 (`tests/unit/customer_billing_portal.test.js`):**
+     - 6 skenario pengujian komprehensif:
+       1. Akurasi matematis engine kalkulasi proration harian.
+       2. Pengambilan profil billing pelanggan & status entitlement.
+       3. Eksekusi upgrade segera & penerbitan faktur prorata.
+       4. Evaluasi dampak downgrade, validasi pemilihan proyek, dan pengarsipan aman.
+       5. Pembatalan terjadwal di akhir periode & reaktivasi reversibel 1-klik.
+       6. Verifikasi Open Data Guarantee (PRD 28.1) lintas status `ACTIVE`, `CANCEL_AT_PERIOD_END`, `PAST_DUE`, dan `FROZEN`.
+     - Terdaftar di `tests/runner.js` dan **LULUS 100% (6/6 tests)**.
+  8. **Verifikasi Build & Test Runner:**
+     - `node tests/runner.js`: **25 Passed, 0 Failed out of 25 Suites (100% Pass Rate)**.
+     - `npm run build`: **Compiled successfully in 6.9s (27 routes, 0 errors)**.
+* **Exit Status:** Lulus 100%. Customer Billing Portal dan alur subscription mandiri siap beroperasi. Menunggu otorisasi "LANJUT PHASE 17".

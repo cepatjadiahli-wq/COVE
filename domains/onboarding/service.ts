@@ -14,8 +14,13 @@ export type OnboardingStage =
   | "CLOSING";
 
 export interface DataAcceptanceChecklistItem {
-  key: string;
-  label: string;
+  key?: string;
+  label?: string;
+  itemKey?: string;
+  itemLabel?: string;
+  id?: string;
+  orgId?: string;
+  projectId?: string;
   description: string;
   status: "PENDING" | "VERIFIED" | "WAIVED";
   verifiedByName?: string;

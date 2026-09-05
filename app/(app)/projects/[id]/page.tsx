@@ -22,6 +22,7 @@ import {
   Scale,
   ShieldCheck,
   CheckCircle2,
+  Plus,
 } from "lucide-react";
 import { ContractRuleVersionModal } from "@/components/projects/ContractRuleVersionModal";
 import { useLanguage } from "@/lib/i18n/LanguageContext";

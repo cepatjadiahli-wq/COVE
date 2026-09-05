@@ -36,3 +36,8 @@ next-env.d.ts
 .DS_Store
 Thumbs.db
 powershell.cmd
+
+# Supabase CLI local runtime
+supabase/.temp/
+supabase/.branches/
+

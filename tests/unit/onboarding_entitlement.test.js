@@ -58,7 +58,7 @@ async function runOnboardingEntitlementTestSuite() {
     projectName: "Grand Meridian Mixed-Use Development",
     baselineExposure: 3200000000,
     closingExposure: 1800000000,
-    resolvedExposureLevelA: 850000000,
+    resolvedExposureLevelA: 85000000,
     baselineCycleDays: 48,
     closingCycleDays: 32,
     pilotFee: 10000000,

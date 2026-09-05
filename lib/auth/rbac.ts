@@ -211,10 +211,25 @@ export function evaluateRolePermission(role: PrdRole, action: PermissionAction):
  * Owner, Admin, Executive Viewer, Auditor have tenant-wide project access.
  * Other roles must be explicitly assigned to the project.
  */
-export function hasProjectAccess(user: { role: PrdRole; assignedProjectIds?: string[] }, targetProjectId: string): boolean {
+export function hasProjectAccess(
+  userOrProjects: any,
+  roleOrTargetId: any,
+  optionalTargetId?: string
+): boolean {
+  if (optionalTargetId !== undefined) {
+    const assignedProjectIds = Array.isArray(userOrProjects) ? userOrProjects : [];
+    const normRole = (roleOrTargetId || "").toUpperCase();
+    if (["OWNER", "ADMIN", "EXECUTIVE_VIEWER", "AUDITOR"].includes(normRole)) {
+      return true;
+    }
+    return assignedProjectIds.includes(optionalTargetId);
+  }
+
+  const user = userOrProjects;
+  const targetProjectId = roleOrTargetId;
   if (!targetProjectId) return false;
 
-  const normRole = (user.role || "").toUpperCase();
+  const normRole = (user?.role || "").toUpperCase();
 
   // Roles with organization-wide project visibility
   if (["OWNER", "ADMIN", "EXECUTIVE_VIEWER", "AUDITOR"].includes(normRole)) {
@@ -222,7 +237,7 @@ export function hasProjectAccess(user: { role: PrdRole; assignedProjectIds?: str
   }
 
   // If user has no specific assignments configured, default to true for tenant backwards compatibility
-  if (!user.assignedProjectIds || user.assignedProjectIds.length === 0) {
+  if (!user?.assignedProjectIds || user.assignedProjectIds.length === 0) {
     return true;
   }
 
@@ -265,3 +280,14 @@ export function validateUserSession(user: { status: "ACTIVE" | "DEACTIVATED"; la
 
   return { valid: true };
 }
+
+export function deactivateUserAndRevokeSession(user: any): any {
+  return {
+    ...user,
+    isActive: false,
+    status: "DEACTIVATED",
+    isSessionRevoked: true,
+    lastSessionRevokedAt: new Date().toISOString(),
+  };
+}
+

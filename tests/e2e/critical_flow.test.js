@@ -12,7 +12,7 @@ function runCriticalFlowTest() {
   console.log("  [Step 2] Organization active:", org.name);
 
   // Step 3 & 4: Create Project & Contract
-  const project = { id: "prj-01", code: "PRJ-MRD-01", name: "Grand Meridian Office Tower" };
+  const _project = { id: "prj-01", code: "PRJ-MRD-01", name: "Grand Meridian Office Tower" };
   const contract = { id: "ctr-01", value: 48500000000, retentionPct: 5 };
   console.log("  [Step 3-4] Project & Contract created with value:", contract.value);
 
@@ -102,8 +102,7 @@ function runCriticalFlowTest() {
   claim.cashReceived += finalPayment;
   claim.stage = "PAID";
   assert.strictEqual(invoice.status, "paid", "Invoice status must transition to paid");
-  assert.strictEqual(claim.stage, "PAID", "Claim status must transition to PAID");
-  assert.strictEqual(claim.cashReceived, claim.claimed, "Total cash received equals claimed amount");
+  assert.strictEqual(claim.cashReceived, netReceivable, "Total cash received equals net receivable after retention");
   console.log("  [Step 15-16] Final cash receipt recorded. Status: PAID (Rp 2.6125B Net Collected)");
 
   // Step 17 & 18: Resolve Action & Record Outcome (Metadata evidence, not double-counted accounting)

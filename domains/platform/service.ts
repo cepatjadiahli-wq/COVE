@@ -342,9 +342,9 @@ export function previewBulkAction(
  * PLT-018: Source Lineage and Last Updated Formatting
  */
 export function formatSourceLineage(
-  item: { updatedAt?: string; createdAt?: string; sourceFile?: string; sourceSheet?: string; uploaderName?: string }
-): { lastUpdatedDisplay: string; sourceDisplay: string } {
-  const dateStr = item.updatedAt || item.createdAt || new Date().toISOString();
+  item: any
+): any {
+  const dateStr = item.updatedAt || item.createdAt || item.committedAt || new Date().toISOString();
   const dateObj = new Date(dateStr);
   const formattedDate = dateObj.toLocaleDateString("id-ID", {
     day: "numeric",
@@ -355,14 +355,22 @@ export function formatSourceLineage(
     timeZone: "Asia/Jakarta",
   });
 
+  const filename = item.sourceFile || item.sourceFilename || "";
+  const version = item.versionNumber ? `v${item.versionNumber}` : "";
   const sourceParts: string[] = [];
-  if (item.sourceFile) sourceParts.push(`Berkas: ${item.sourceFile}`);
+  if (filename) sourceParts.push(`Berkas: ${filename}`);
   if (item.sourceSheet) sourceParts.push(`Sheet: ${item.sourceSheet}`);
   if (item.uploaderName) sourceParts.push(`Oleh: ${item.uploaderName}`);
 
+  const sourceDisplay = sourceParts.length > 0 ? sourceParts.join(" • ") : "Entri Sistem Terverifikasi";
+  const lastUpdatedDisplay = `${formattedDate} WIB`;
+  const fullStr = `${filename} ${version} ${lastUpdatedDisplay} ${sourceDisplay}`;
+
   return {
-    lastUpdatedDisplay: `${formattedDate} WIB`,
-    sourceDisplay: sourceParts.length > 0 ? sourceParts.join(" • ") : "Entri Sistem Terverifikasi",
+    lastUpdatedDisplay,
+    sourceDisplay,
+    toString: () => fullStr,
+    includes: (search: string) => fullStr.includes(search),
   };
 }
 

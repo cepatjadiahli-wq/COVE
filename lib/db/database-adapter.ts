@@ -27,6 +27,7 @@ import {
   DemoContractEvidenceChecklist,
   DemoContractEvidenceChecklistItem,
   DemoClaimReadinessItem,
+  DemoClaim,
   SEED_WEEKLY_SNAPSHOTS,
   DemoWeeklyReviewSnapshot,
   SEED_PROJECT_BASELINES,
@@ -37,12 +38,38 @@ import {
   DemoDataAcceptanceItem,
   SEED_PILOT_SCORECARDS,
   DemoPilotScorecard,
-} from "@/domains/demo/seed-data";
-import { calculateClaimGaps } from "@/domains/gaps/service";
-import { evaluateClaimRisk, RiskLevel } from "@/domains/risks/service";
-import { ClaimStage, OutcomeType, Role } from "@/lib/constants";
-import { calculateInvoiceFinancials } from "@/domains/invoices/service";
-import { hasProjectAccess } from "@/lib/auth/rbac";
+} from "../../domains/demo/seed-data";
+import { calculateClaimGaps } from "../../domains/gaps/service";
+import { evaluateClaimRisk } from "../../domains/risks/service";
+import { ClaimStage, OutcomeType, Role, RiskLevel } from "../constants";
+import { calculateInvoiceFinancials } from "../../domains/invoices/service";
+import { hasProjectAccess } from "../auth/rbac";
+import {
+  Subscription,
+  Plan,
+  Price,
+  PlanEntitlement,
+  SubscriptionItem,
+  SubscriptionStatusEvent,
+  BillingInvoice,
+  Payment,
+  PaymentAttempt,
+  WebhookEvent,
+  EntitlementSnapshot,
+  SubscriptionOverride,
+  Discount,
+  BillingAuditLog,
+} from "../../domains/billing/types";
+import {
+  INITIAL_PLANS,
+  INITIAL_PRICES,
+  INITIAL_PLAN_ENTITLEMENTS,
+  INITIAL_SUBSCRIPTIONS,
+  INITIAL_SUBSCRIPTION_ITEMS,
+  INITIAL_DISCOUNTS,
+} from "../../domains/billing/seed-data";
+import { evaluateTenantEntitlement, guardMutation } from "../../domains/entitlement/service";
+import { MutationType } from "../../domains/entitlement/types";
 
 export interface DashboardKpis {
   cashAtRisk: number;
@@ -54,6 +81,9 @@ export interface DashboardKpis {
   expectedCollection30Days: number;
   expectedCollectionAffectedCount: number;
   freshnessLabel: string;
+  controllablePreInvoiceExposure?: number;
+  certifiedNotInvoiced?: number;
+  cashCollectedTotal?: number;
 }
 
 export interface MoneyPipelineSummary {
@@ -100,6 +130,16 @@ export interface PilotOrgRecord {
   founderAssistedUpdatesCount: number;
   wtpStatus: "NOT_TESTED" | "PRICE_PRESENTED" | "INTERESTED" | "NEGOTIATING" | "ACCEPTED" | "DECLINED" | "UNKNOWN";
   pilotDecision: "STRONG_SIGNAL" | "PROMISING" | "MIXED" | "WEAK" | "REJECTED" | "PENDING";
+  billingEmail?: string;
+  billingPhone?: string;
+  subscriptionTier?: string;
+  subscriptionStatus?: string;
+  subscriptionExpiresAt?: string;
+  activeSubscriptionId?: string;
+  npwpNumber?: string;
+  taxInvoiceAddress?: string;
+  defaultCurrency?: string;
+  timezone?: string;
 }
 
 export type RealProspectStatus =
@@ -979,6 +1019,69 @@ class CoveDatabaseAdapter {
   private dataAcceptanceItems: DemoDataAcceptanceItem[] = [...SEED_DATA_ACCEPTANCE_ITEMS];
   private pilotScorecards: DemoPilotScorecard[] = [...SEED_PILOT_SCORECARDS];
 
+  // Phase 16R.3: Platform Administrators Table (isolated from tenant membership)
+  public platformAdmins = new Set<string>([
+    "usr-superadmin",
+    "auth-superadmin",
+    "usr-platform-admin",
+  ]);
+
+  public isPlatformAdmin(userId: string): boolean {
+    return this.platformAdmins.has(userId);
+  }
+
+  // Phase 16R.3: Option B Canonical Profile Lookup
+  public getProfileByAuthUserId(authUserId: string) {
+    const profile = this.profiles.find(
+      (p) => (p as any).auth_user_id === authUserId || p.id === authUserId
+    );
+    return profile || null;
+  }
+
+  // Phase 16R.2 & 16R.3: Database Membership Table representation (backed by organization_members)
+  public organizationMembers: Array<{
+    id: string;
+    organizationId: string;
+    userId: string;
+    role: Role | string;
+    status: "active" | "invited" | "disabled";
+  }> = SEED_PROFILES.map((p, idx) => ({
+    id: `omem-${idx + 1}`,
+    organizationId: p.orgId || "org-nusantara-01",
+    userId: p.id,
+    role: p.role,
+    status: (p.status === "DEACTIVATED" ? "disabled" : p.status === "INVITED" ? "invited" : "active"),
+  }));
+
+  public getOrganizationMembersByUser(userIdOrAuthId: string) {
+    const profile = this.getProfileByAuthUserId(userIdOrAuthId);
+    const profileId = profile ? profile.id : userIdOrAuthId;
+    return this.organizationMembers.filter(
+      (m) => (m.userId === profileId || m.userId === userIdOrAuthId) && m.status === "active"
+    );
+  }
+
+  // Phase 16R.2: Mutex lock for atomic mutation concurrency
+  private tenantLocks = new Map<string, Promise<void>>();
+
+  public async acquireTenantLock<T>(orgId: string, operation: () => Promise<T>): Promise<T> {
+    while (this.tenantLocks.has(orgId)) {
+      await this.tenantLocks.get(orgId);
+    }
+    let resolveLock!: () => void;
+    const lockPromise = new Promise<void>((res) => {
+      resolveLock = res;
+    });
+    this.tenantLocks.set(orgId, lockPromise);
+
+    try {
+      return await operation();
+    } finally {
+      this.tenantLocks.delete(orgId);
+      resolveLock();
+    }
+  }
+
   // Phase 2: Project-Level Membership & Assisted Access Grants
   private projectMembers = [
     { id: "pmem-01", orgId: "org-nusantara-01", projectId: "prj-01", userId: "usr-dimas", roleInProject: "COMMERCIAL_MANAGER", createdAt: "2026-08-01T00:00:00Z" },
@@ -1010,6 +1113,23 @@ class CoveDatabaseAdapter {
   ];
 
   private feedbackSubmissions: DetailedFeedbackSubmission[] = [];
+
+  // Phase 14: Billing & Entitlement Foundation Collections
+  private plans: Plan[] = [...INITIAL_PLANS];
+  private prices: Price[] = [...INITIAL_PRICES];
+  private planEntitlements: PlanEntitlement[] = [...INITIAL_PLAN_ENTITLEMENTS];
+  private subscriptions: Subscription[] = [...INITIAL_SUBSCRIPTIONS];
+  private subscriptionItems: SubscriptionItem[] = [...INITIAL_SUBSCRIPTION_ITEMS];
+  private subscriptionStatusEvents: SubscriptionStatusEvent[] = [];
+  private billingInvoices: BillingInvoice[] = [];
+  private payments: Payment[] = [];
+  private paymentAttempts: PaymentAttempt[] = [];
+  private webhookEvents: WebhookEvent[] = [];
+  private entitlementSnapshots: EntitlementSnapshot[] = [];
+  private subscriptionOverrides: SubscriptionOverride[] = [];
+  private manualSubscriptionOverrides: any[] = [];
+  private discounts: Discount[] = [...INITIAL_DISCOUNTS];
+  private billingAuditLogs: BillingAuditLog[] = [];
 
   // --- QUERY ACCESSORS ---
 
@@ -1286,6 +1406,741 @@ class CoveDatabaseAdapter {
   public getNotifications() { return [...this.notifications]; }
   public getFeedbackSubmissions() { return [...this.feedbackSubmissions]; }
 
+  // Phase 14 Billing & Entitlement Accessors
+  public getPlans() { return [...this.plans]; }
+  public getPrices() { return [...this.prices]; }
+  public getPlanEntitlements() { return [...this.planEntitlements]; }
+  public getSubscriptions(orgId?: string) {
+    if (orgId) return this.subscriptions.filter((s) => s.orgId === orgId);
+    return [...this.subscriptions];
+  }
+  public getActiveSubscription(orgId?: string) {
+    if (orgId) {
+      return this.subscriptions.find((s) => s.orgId === orgId) || null;
+    }
+    return this.subscriptions[0] || null;
+  }
+  public getTenantEntitlement(orgId: string = "org-nusantara-01") {
+    const sub = this.getActiveSubscription(orgId);
+    const activeProjects = this.projects.filter(
+      (p) => (p.orgId || "org-nusantara-01") === orgId && p.status === "active"
+    ).length;
+    const activeUsers = this.profiles.filter(
+      (p) => ((p as any).orgId || "org-nusantara-01") === orgId && (p.status === "ACTIVE" || (p as any).status === "INVITED")
+    ).length;
+    const activeOverride = this.subscriptionOverrides.find((o) => o.orgId === orgId && o.isActive);
+    const activeManualOverrides = this.manualSubscriptionOverrides.filter(
+      (o) => (o.orgId === orgId || o.org_id === orgId) && !o.isRevoked && !o.is_revoked
+    );
+
+    return evaluateTenantEntitlement({
+      orgId,
+      subscription: sub || undefined,
+      activeProjectsCount: activeProjects,
+      activeUsersCount: activeUsers,
+      activeOverride,
+      manualOverrides: activeManualOverrides,
+    });
+  }
+
+  public ensureCanMutate(orgId: string = "org-nusantara-01", mutationType: MutationType = "UPDATE_PROJECT") {
+    const evaluation = this.getTenantEntitlement(orgId);
+    const guard = guardMutation(evaluation, mutationType);
+    if (!guard.allowed) {
+      throw new Error(`[ENTITLEMENT_GUARD_REJECTED] ${guard.message}`);
+    }
+    return evaluation;
+  }
+  public setSubscriptionStatus(subId: string, newStatus: any, reason: string = "Status updated", actorId?: string) {
+    const sub = this.subscriptions.find((s) => s.id === subId);
+    if (sub) {
+      const oldStatus = sub.status;
+      sub.status = newStatus;
+      sub.updatedAt = new Date().toISOString();
+      this.subscriptionStatusEvents.unshift({
+        id: "event-" + Math.random().toString(36).substring(2, 9),
+        subscriptionId: subId,
+        fromStatus: oldStatus,
+        toStatus: newStatus,
+        reason,
+        source: "USER_REQUEST",
+        actorId,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
+  public setSubscriptionOverride(override: SubscriptionOverride) {
+    this.subscriptionOverrides = this.subscriptionOverrides.filter((o) => o.orgId !== override.orgId);
+    this.subscriptionOverrides.push(override);
+  }
+  public setManualSubscriptionOverride(override: any) {
+    this.manualSubscriptionOverrides = this.manualSubscriptionOverrides.filter(
+      (o) => !(o.subscriptionId === override.subscriptionId && o.overrideType === override.overrideType)
+    );
+    this.manualSubscriptionOverrides.push(override);
+  }
+  public revokeManualSubscriptionOverride(overrideId: string, reason: string) {
+    const ovr = this.manualSubscriptionOverrides.find((o) => o.id === overrideId);
+    if (ovr) {
+      ovr.isRevoked = true;
+      ovr.is_revoked = true;
+      ovr.revokedAt = new Date().toISOString();
+      ovr.revocationReason = reason;
+    }
+  }
+
+  // Phase 16 Customer Billing Workflows
+  public updateSubscriptionPlan(
+    subId: string,
+    newPlanId: any,
+    newInterval?: any,
+    actorId: string = "USER"
+  ) {
+    const sub = this.subscriptions.find((s) => s.id === subId);
+    if (!sub) throw new Error(`Subscription ${subId} not found`);
+
+    const oldPlanId = sub.planId;
+    sub.planId = newPlanId;
+    if (newInterval) sub.billingInterval = newInterval;
+    sub.updatedAt = new Date().toISOString();
+
+    const org = this.organizations.find((o) => o.id === sub.orgId);
+    if (org) {
+      org.subscriptionTier = newPlanId;
+    }
+
+    const entitlement = this.planEntitlements.find((e) => e.planId === newPlanId) || this.planEntitlements[1];
+    this.createEntitlementSnapshot({
+      orgId: sub.orgId,
+      subscriptionId: sub.id,
+      maxActiveProjects: entitlement.maxActiveProjects,
+      maxUsers: entitlement.maxUsers,
+      features: {
+        import: entitlement.importEnabled,
+        gapLedger: entitlement.valueGapLedgerEnabled,
+        readinessGate: entitlement.claimReadinessEnabled,
+        actionQueue: entitlement.actionQueueEnabled,
+        roiLedger: entitlement.roiLedgerEnabled,
+      },
+      effectiveFrom: new Date().toISOString(),
+    });
+
+    this.subscriptionStatusEvents.unshift({
+      id: `evt-sub-${Date.now()}`,
+      subscriptionId: sub.id,
+      fromStatus: sub.status,
+      toStatus: sub.status,
+      reason: `Plan changed from ${oldPlanId} to ${newPlanId}`,
+      source: "USER_REQUEST",
+      actorId,
+      createdAt: new Date().toISOString(),
+    });
+
+    this.recordBillingAuditLog({
+      orgId: sub.orgId,
+      action: "SUBSCRIPTION_PLAN_CHANGED",
+      actorId,
+      details: {
+        subscriptionId: sub.id,
+        oldPlanId,
+        newPlanId,
+        interval: sub.billingInterval,
+      },
+    });
+
+    return sub;
+  }
+
+  public cancelSubscriptionAtPeriodEnd(
+    subId: string,
+    reason: string = "Customer requested cancellation",
+    actorId: string = "USER"
+  ) {
+    const sub = this.subscriptions.find((s) => s.id === subId);
+    if (!sub) throw new Error(`Subscription ${subId} not found`);
+
+    const oldStatus = sub.status;
+    sub.status = "CANCEL_AT_PERIOD_END";
+    sub.cancelAtPeriodEnd = true;
+    sub.canceledAt = new Date().toISOString();
+    sub.cancellationReason = reason;
+    sub.updatedAt = new Date().toISOString();
+
+    const org = this.organizations.find((o) => o.id === sub.orgId);
+    if (org) {
+      org.subscriptionStatus = "CANCEL_AT_PERIOD_END";
+    }
+
+    this.subscriptionStatusEvents.unshift({
+      id: `evt-sub-${Date.now()}`,
+      subscriptionId: sub.id,
+      fromStatus: oldStatus,
+      toStatus: "CANCEL_AT_PERIOD_END",
+      reason: `Scheduled cancellation: ${reason}`,
+      source: "USER_REQUEST",
+      actorId,
+      createdAt: new Date().toISOString(),
+    });
+
+    this.recordBillingAuditLog({
+      orgId: sub.orgId,
+      action: "SUBSCRIPTION_CANCEL_SCHEDULED",
+      actorId,
+      details: {
+        subscriptionId: sub.id,
+        currentPeriodEnd: sub.currentPeriodEnd,
+        reason,
+      },
+    });
+
+    return sub;
+  }
+
+  public reactivateSubscription(
+    subId: string,
+    actorId: string = "USER"
+  ) {
+    const sub = this.subscriptions.find((s) => s.id === subId);
+    if (!sub) throw new Error(`Subscription ${subId} not found`);
+
+    const oldStatus = sub.status;
+    sub.status = "ACTIVE";
+    sub.cancelAtPeriodEnd = false;
+    sub.canceledAt = undefined;
+    sub.cancellationReason = undefined;
+    sub.updatedAt = new Date().toISOString();
+
+    const org = this.organizations.find((o) => o.id === sub.orgId);
+    if (org) {
+      org.subscriptionStatus = "ACTIVE";
+    }
+
+    this.subscriptionStatusEvents.unshift({
+      id: `evt-sub-${Date.now()}`,
+      subscriptionId: sub.id,
+      fromStatus: oldStatus,
+      toStatus: "ACTIVE",
+      reason: "Subscription reactivated before period end",
+      source: "USER_REQUEST",
+      actorId,
+      createdAt: new Date().toISOString(),
+    });
+
+    this.recordBillingAuditLog({
+      orgId: sub.orgId,
+      action: "SUBSCRIPTION_REACTIVATED",
+      actorId,
+      details: {
+        subscriptionId: sub.id,
+        restoredStatus: "ACTIVE",
+      },
+    });
+
+    return sub;
+  }
+
+  public archiveProjectsExcept(
+    orgId: string,
+    keepActiveProjectIds: string[]
+  ) {
+    const keepSet = new Set(keepActiveProjectIds);
+    let archivedCount = 0;
+
+    this.projects.forEach((p) => {
+      if (p.status === "active" && !keepSet.has(p.id)) {
+        (p as any).status = "archived";
+        archivedCount++;
+      } else if (keepSet.has(p.id)) {
+        p.status = "active";
+      }
+    });
+
+    this.recordBillingAuditLog({
+      orgId,
+      action: "PROJECTS_ARCHIVED_FOR_DOWNGRADE",
+      actorId: "USER",
+      details: {
+        archivedCount,
+        keptActiveCount: keepActiveProjectIds.length,
+        keptProjectIds: keepActiveProjectIds,
+      },
+    });
+
+    return { archivedCount, keptActiveCount: keepActiveProjectIds.length };
+  }
+  public getSubscriptionStatusEvents(subId?: string) {
+    if (subId) return this.subscriptionStatusEvents.filter((e) => e.subscriptionId === subId);
+    return [...this.subscriptionStatusEvents];
+  }
+  public getBillingInvoices(orgId?: string) {
+    if (orgId) return this.billingInvoices.filter((i) => i.orgId === orgId);
+    return [...this.billingInvoices];
+  }
+  public getPayments(orgId?: string) {
+    if (orgId) return this.payments.filter((p) => p.orgId === orgId);
+    return [...this.payments];
+  }
+
+  // Phase 15: Webhook Events & Billing Persistence Engine
+  public static readonly WEBHOOK_RETENTION_DAYS = 90;
+
+  // Phase 16R.3: Internal Service Role method for backend processing
+  public getWebhookEventsAsServiceRole(provider?: string): WebhookEvent[] {
+    if (provider) return this.webhookEvents.filter((e) => e.provider === provider);
+    return [...this.webhookEvents];
+  }
+
+  // Phase 16R.3: Authenticated method strictly for Platform Administrators
+  public getWebhookEvents(
+    optionsOrProvider?:
+      | string
+      | { provider?: string; authContext?: { userId: string } },
+    legacyRole?: string
+  ): WebhookEvent[] {
+    // 1. Structured authContext inspection
+    if (typeof optionsOrProvider === "object" && optionsOrProvider !== null) {
+      const { provider, authContext } = optionsOrProvider;
+      if (!authContext || !authContext.userId) {
+        throw new Error("[SECURITY_ERROR] Akses ditolak: Sesi server tidak terotentikasi.");
+      }
+
+      // Check against platformAdmins table (tenant users, including OWNER and ADMIN, are 100% blocked)
+      const isPlatformAdmin = this.isPlatformAdmin(authContext.userId);
+      if (!isPlatformAdmin) {
+        throw new Error(
+          `[SECURITY_ERROR] Akses ditolak: Pengguna '${authContext.userId}' bukan Platform Administrator. Pengguna tenant dilarang membaca tabel audit webhook.`
+        );
+      }
+
+      if (provider) return this.webhookEvents.filter((e) => e.provider === provider);
+      return [...this.webhookEvents];
+    }
+
+    // 2. Legacy / Direct caller with legacyRole parameter (only SUPER_ADMIN / platform admin allowed)
+    const provider = typeof optionsOrProvider === "string" ? optionsOrProvider : undefined;
+    if (legacyRole === "SERVICE_ROLE") {
+      if (provider) return this.webhookEvents.filter((e) => e.provider === provider);
+      return [...this.webhookEvents];
+    }
+    if (!legacyRole || !["SUPER_ADMIN", "PLATFORM_ADMIN"].includes(legacyRole)) {
+      throw new Error(
+        "[SECURITY_ERROR] Akses ditolak: Pengguna tenant dilarang membaca tabel audit webhook. Hanya Platform Administrator atau Service Role yang berwenang."
+      );
+    }
+    if (provider) return this.webhookEvents.filter((e) => e.provider === provider);
+    return [...this.webhookEvents];
+  }
+
+  // Phase 16R.3: Dedicated Service Role method for retention purge
+  public purgeWebhookEventsAsServiceRole(options: {
+    retentionDays?: number;
+    referenceDate?: Date;
+    dryRun?: boolean;
+    actorId?: string;
+  } = {}) {
+    return this.purgeWebhookEvents(options);
+  }
+
+  public purgeWebhookEvents(options: {
+    retentionDays?: number;
+    referenceDate?: Date;
+    dryRun?: boolean;
+    actorId?: string;
+  } = {}) {
+    const retentionDays = options.retentionDays || CoveDatabaseAdapter.WEBHOOK_RETENTION_DAYS;
+    const now = options.referenceDate ? options.referenceDate.getTime() : Date.now();
+    const cutoffMs = now - retentionDays * 24 * 60 * 60 * 1000;
+    const cutoffDate = new Date(cutoffMs).toISOString();
+
+    const purgeableCandidates: WebhookEvent[] = [];
+    const preservedForInvestigation: WebhookEvent[] = [];
+
+    for (const evt of this.webhookEvents) {
+      const evtTime = new Date(evt.createdAt).getTime();
+      if (evtTime < cutoffMs) {
+        // Exemption rules: failed processing or explicit investigation / reconciliation requirement
+        const isFailed = evt.processingStatus === "FAILED";
+        const needsInvestigation =
+          isFailed ||
+          evt.errorMessage != null ||
+          Boolean(evt.rawPayload && (evt.rawPayload as any).investigation_required === true) ||
+          Boolean(evt.rawPayload && (evt.rawPayload as any).reconciliation_status === "PENDING");
+
+        if (needsInvestigation) {
+          preservedForInvestigation.push(evt);
+        } else {
+          purgeableCandidates.push(evt);
+        }
+      }
+    }
+
+    if (!options.dryRun && purgeableCandidates.length > 0) {
+      const candidateIds = new Set(purgeableCandidates.map((c) => c.id));
+      const countBefore = this.webhookEvents.length;
+      this.webhookEvents = this.webhookEvents.filter((e) => !candidateIds.has(e.id));
+
+      this.billingAuditLogs.unshift({
+        id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        orgId: "00000000-0000-0000-0000-000000000000",
+        actorId: options.actorId || "SYSTEM_SCHEDULER",
+        actorRole: "SYSTEM_RETENTION_SCHEDULER",
+        action: "PURGE_WEBHOOK_EVENTS",
+        targetEntity: "webhook_events",
+        targetId: "bulk_retention_purge",
+        beforeState: { totalWebhookEventsBefore: countBefore },
+        afterState: {
+          purgedCount: purgeableCandidates.length,
+          preservedCount: preservedForInvestigation.length,
+          remainingTotal: this.webhookEvents.length,
+          cutoffDate,
+        },
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    return {
+      status: "SUCCESS" as const,
+      purgedCount: purgeableCandidates.length,
+      preservedCount: preservedForInvestigation.length,
+      cutoffDate,
+      retentionDays,
+      dryRun: Boolean(options.dryRun),
+    };
+  }
+
+  public findWebhookEvent(provider: string, eventId: string): WebhookEvent | undefined {
+    return this.webhookEvents.find(
+      (e) => e.provider === provider && e.eventId === eventId
+    );
+  }
+
+  public recordWebhookEvent(event: Omit<WebhookEvent, "id" | "createdAt">): WebhookEvent {
+    const existing = this.findWebhookEvent(event.provider, event.eventId);
+    if (existing) {
+      existing.rawPayload = event.rawPayload;
+      existing.processingStatus = event.processingStatus;
+      existing.errorMessage = event.errorMessage;
+      return existing;
+    }
+
+    const newRecord: WebhookEvent = {
+      id: `wh-evt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      ...event,
+      createdAt: new Date().toISOString(),
+    };
+    this.webhookEvents.unshift(newRecord);
+    return newRecord;
+  }
+
+  public updateWebhookEventStatus(
+    id: string,
+    status: "PENDING" | "PROCESSED" | "FAILED" | "IGNORED",
+    errorMessage?: string
+  ): WebhookEvent | undefined {
+    const record = this.webhookEvents.find((e) => e.id === id || e.eventId === id);
+    if (record) {
+      record.processingStatus = status;
+      record.errorMessage = errorMessage;
+      record.processedAt = new Date().toISOString();
+    }
+    return record;
+  }
+
+  public createBillingInvoice(inv: Partial<BillingInvoice>): BillingInvoice {
+    const newInvoice: BillingInvoice = {
+      id: inv.id || `binv-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      orgId: inv.orgId || "org-nusantara-01",
+      subscriptionId: inv.subscriptionId,
+      invoiceNumber: inv.invoiceNumber || `INV-COVE-${Date.now()}`,
+      amountSubtotal: inv.amountSubtotal || inv.amountTotal || 0,
+      discountAmount: inv.discountAmount || 0,
+      taxAmount: inv.taxAmount || 0,
+      amountTotal: inv.amountTotal || 0,
+      currency: inv.currency || "IDR",
+      status: inv.status || "PENDING",
+      dueDate: inv.dueDate || new Date().toISOString(),
+      paidAt: inv.paidAt,
+      pdfUrl: inv.pdfUrl,
+      createdAt: new Date().toISOString(),
+    };
+    this.billingInvoices.unshift(newInvoice);
+    return newInvoice;
+  }
+
+  public recordPayment(payment: Partial<Payment>): Payment {
+    const newPayment: Payment = {
+      id: payment.id || `pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      orgId: payment.orgId || "org-nusantara-01",
+      billingInvoiceId: payment.billingInvoiceId,
+      provider: payment.provider || "MOCK",
+      providerPaymentId: payment.providerPaymentId || `ext-pay-${Date.now()}`,
+      amount: payment.amount || 0,
+      feeAmount: payment.feeAmount || 0,
+      netAmount: payment.netAmount || payment.amount || 0,
+      paymentMethod: payment.paymentMethod || "UNKNOWN",
+      status: payment.status || "SUCCEEDED",
+      paidAt: payment.paidAt || new Date().toISOString(),
+      receiptUrl: payment.receiptUrl,
+      createdAt: new Date().toISOString(),
+    };
+    this.payments.unshift(newPayment);
+    return newPayment;
+  }
+
+  public recordPaymentAttempt(attempt: Partial<PaymentAttempt>): PaymentAttempt {
+    const newAttempt: PaymentAttempt = {
+      id: attempt.id || `att-${Date.now()}`,
+      billingInvoiceId: attempt.billingInvoiceId || "",
+      attemptNumber: attempt.attemptNumber || 1,
+      status: attempt.status || "PENDING",
+      gatewayErrorCode: attempt.gatewayErrorCode,
+      gatewayErrorMessage: attempt.gatewayErrorMessage,
+      attemptedAt: attempt.attemptedAt || new Date().toISOString(),
+    };
+    this.paymentAttempts.unshift(newAttempt);
+    return newAttempt;
+  }
+
+  public createEntitlementSnapshot(snapshot: Partial<EntitlementSnapshot>): EntitlementSnapshot {
+    const newSnapshot: EntitlementSnapshot = {
+      id: snapshot.id || `snp-${Date.now()}`,
+      orgId: snapshot.orgId || "org-nusantara-01",
+      subscriptionId: snapshot.subscriptionId,
+      maxActiveProjects: snapshot.maxActiveProjects ?? 1,
+      maxUsers: snapshot.maxUsers ?? 10,
+      features: snapshot.features || {},
+      effectiveFrom: snapshot.effectiveFrom || new Date().toISOString(),
+      effectiveUntil: snapshot.effectiveUntil,
+      createdAt: new Date().toISOString(),
+    };
+    this.entitlementSnapshots.unshift(newSnapshot);
+    return newSnapshot;
+  }
+
+  public getEntitlementSnapshots(orgId?: string) {
+    if (orgId) return this.entitlementSnapshots.filter((s) => s.orgId === orgId);
+    return [...this.entitlementSnapshots];
+  }
+
+  public recordBillingAuditLog(entry: Partial<BillingAuditLog>): BillingAuditLog {
+    const log: BillingAuditLog = {
+      id: entry.id || `baud-${Date.now()}`,
+      orgId: entry.orgId || "org-nusantara-01",
+      action: entry.action || "SYSTEM_AUDIT",
+      actorId: entry.actorId || "SYSTEM",
+      details: entry.details || {},
+      ipAddress: entry.ipAddress,
+      createdAt: new Date().toISOString(),
+    };
+    this.billingAuditLogs.unshift(log);
+    return log;
+  }
+
+  public getBillingAuditLogs(orgId?: string) {
+    if (orgId) return this.billingAuditLogs.filter((l) => l.orgId === orgId);
+    return [...this.billingAuditLogs];
+  }
+
+  /**
+   * Atomic activation of subscription from a verified webhook payment.
+   */
+  public activateSubscriptionViaWebhook(params: {
+    orgId: string;
+    billingInvoiceId?: string;
+    planId?: any;
+    billingInterval?: any;
+    amount: number;
+    currency?: string;
+    settlementStatus?: string;
+    provider: any;
+    providerPaymentId: string;
+    eventId: string;
+    paymentMethod?: string;
+  }) {
+    // 0. Strict 15-point Financial Integrity Pre-flight Validation
+    let matchedInvoice: BillingInvoice | undefined;
+    if (params.billingInvoiceId) {
+      // Check 5: Rejection of construction claims / progress invoices
+      const isClaim =
+        this.claims.some((c) => c.id === params.billingInvoiceId) ||
+        this.invoices.some((i) => i.id === params.billingInvoiceId);
+      if (isClaim) {
+        throw new Error(
+          `CONSTRUCTION_INVOICE_REJECTION: ID ${params.billingInvoiceId} adalah invoice proyek konstruksi atau claim, bukan billing invoice langganan COVE.`
+        );
+      }
+
+      matchedInvoice = this.billingInvoices.find((i) => i.id === params.billingInvoiceId);
+      if (!matchedInvoice) {
+        throw new Error(`BILLING_INVOICE_NOT_FOUND: Faktur tagihan billing dengan ID ${params.billingInvoiceId} tidak ditemukan.`);
+      }
+
+      // Check 4: Cross-tenant match
+      if (matchedInvoice.orgId !== params.orgId) {
+        throw new Error(`CROSS_TENANT_REJECTION: Organisasi pemohon (${params.orgId}) tidak sesuai dengan pemilik tagihan (${matchedInvoice.orgId}).`);
+      }
+
+      // Check 11: Stale & Invalid invoice status
+      if (matchedInvoice.status === "PAID") {
+        throw new Error(`STALE_PAYMENT_REJECTION: Faktur tagihan ${matchedInvoice.invoiceNumber} sudah berstatus PAID.`);
+      }
+      if (matchedInvoice.status !== "PENDING" && matchedInvoice.status !== "DRAFT") {
+        throw new Error(`INVALID_INVOICE_STATUS: Faktur tagihan berstatus ${matchedInvoice.status} tidak dapat diproses pembayarannya.`);
+      }
+
+      // Check 8: Currency match
+      if (params.currency && params.currency.toUpperCase() !== matchedInvoice.currency.toUpperCase()) {
+        throw new Error(`CURRENCY_MISMATCH: Mata uang pembayaran (${params.currency}) tidak sesuai dengan tagihan (${matchedInvoice.currency}).`);
+      }
+
+      // Check 9 & 14: Partial payment rejection
+      if (params.amount < matchedInvoice.amountTotal) {
+        throw new Error(
+          `PARTIAL_PAYMENT_REJECTED: Pembayaran sebagian (Rp ${params.amount}) ditolak. Nilai penuh tagihan adalah Rp ${matchedInvoice.amountTotal}.`
+        );
+      }
+
+      // Check 10: Provider settlement status
+      if (params.settlementStatus) {
+        const st = params.settlementStatus.toUpperCase().trim();
+        if (!["SETTLED", "COMPLETED", "PAID", "SUCCESS"].includes(st)) {
+          throw new Error(`UNSETTLED_PAYMENT: Status penyelesaian gateway ${params.settlementStatus} belum memenuhi syarat settlement.`);
+        }
+      }
+    }
+
+    const org = this.organizations.find((o) => o.id === params.orgId);
+    const targetPlanId = params.planId || "b2b_core";
+    const plan = this.plans.find((p) => p.id === targetPlanId) || this.plans[1];
+    const entitlement = this.planEntitlements.find((e) => e.planId === targetPlanId) || this.planEntitlements[1];
+
+    // 1. Find or create subscription
+    let sub = this.subscriptions.find((s) => s.orgId === params.orgId);
+    const now = new Date();
+    const periodEnd = new Date(now);
+    if (params.billingInterval === "ANNUAL") {
+      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+    } else {
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+    }
+
+    const prevStatus = sub ? sub.status : "PENDING_PAYMENT";
+
+    if (!sub) {
+      const newSub: Subscription = {
+        id: `sub-${params.orgId}-${Date.now()}`,
+        orgId: params.orgId,
+        planId: targetPlanId,
+        priceId: `price_${targetPlanId}_${(params.billingInterval || "MONTHLY").toLowerCase()}`,
+        provider: params.provider,
+        currency: "IDR",
+        status: "ACTIVE",
+        billingInterval: params.billingInterval || "MONTHLY",
+        currentPeriodStart: now.toISOString(),
+        currentPeriodEnd: periodEnd.toISOString(),
+        cancelAtPeriodEnd: false,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      this.subscriptions.push(newSub);
+      sub = newSub;
+    } else {
+      sub.planId = targetPlanId;
+      sub.status = "ACTIVE";
+      if (params.billingInterval) {
+        sub.billingInterval = params.billingInterval;
+      }
+      sub.currentPeriodStart = now.toISOString();
+      sub.currentPeriodEnd = periodEnd.toISOString();
+      sub.cancelAtPeriodEnd = false;
+      sub.gracePeriodEnd = undefined;
+      sub.updatedAt = now.toISOString();
+    }
+
+    const activeSub = sub as Subscription;
+
+    // 2. Update organization
+    if (org) {
+      org.subscriptionTier = targetPlanId;
+      org.subscriptionStatus = "ACTIVE";
+      org.subscriptionExpiresAt = periodEnd.toISOString();
+      org.activeSubscriptionId = activeSub.id;
+    }
+
+    // 3. Mark or create paid billing invoice
+    let inv: BillingInvoice;
+    if (matchedInvoice) {
+      matchedInvoice.status = "PAID";
+      matchedInvoice.paidAt = now.toISOString();
+      inv = matchedInvoice;
+    } else {
+      inv = this.createBillingInvoice({
+        orgId: params.orgId,
+        subscriptionId: activeSub.id,
+        amountTotal: params.amount,
+        amountSubtotal: params.amount,
+        status: "PAID",
+        paidAt: now.toISOString(),
+      });
+    }
+
+    // 4. Record payment
+    const payment = this.recordPayment({
+      orgId: params.orgId,
+      billingInvoiceId: inv.id,
+      provider: params.provider,
+      providerPaymentId: params.providerPaymentId,
+      amount: params.amount,
+      paymentMethod: params.paymentMethod || "GATEWAY_WEBHOOK",
+      status: "SUCCEEDED",
+      paidAt: now.toISOString(),
+    });
+
+    // 5. Create entitlement snapshot
+    this.createEntitlementSnapshot({
+      orgId: params.orgId,
+      subscriptionId: activeSub.id,
+      maxActiveProjects: entitlement.maxActiveProjects,
+      maxUsers: entitlement.maxUsers,
+      features: {
+        import: entitlement.importEnabled,
+        gapLedger: entitlement.valueGapLedgerEnabled,
+        readinessGate: entitlement.claimReadinessEnabled,
+        actionQueue: entitlement.actionQueueEnabled,
+        roiLedger: entitlement.roiLedgerEnabled,
+      },
+      effectiveFrom: now.toISOString(),
+    });
+
+    // 6. Record status transition event
+    this.subscriptionStatusEvents.unshift({
+      id: `evt-sub-${Date.now()}`,
+      subscriptionId: activeSub.id,
+      fromStatus: prevStatus,
+      toStatus: "ACTIVE",
+      reason: `Activated via verified webhook (${params.provider}: ${params.eventId})`,
+      source: "WEBHOOK",
+      correlationId: params.eventId,
+      createdAt: now.toISOString(),
+    });
+
+    // 7. Record billing audit log
+    this.recordBillingAuditLog({
+      orgId: params.orgId,
+      action: "SUBSCRIPTION_ACTIVATED_VIA_WEBHOOK",
+      actorId: `PROVIDER_${params.provider}`,
+      details: {
+        subscriptionId: activeSub.id,
+        planId: targetPlanId,
+        amount: params.amount,
+        providerPaymentId: params.providerPaymentId,
+        webhookEventId: params.eventId,
+      },
+    });
+
+    return { subscription: activeSub, invoice: inv, payment };
+  }
+
   public getPilotValueSummary(orgId: string = "org-nusantara-01") {
     const org = this.organizations.find((o) => o.id === orgId) || this.organizations[0];
     const claims = this.claims;
@@ -1518,6 +2373,10 @@ class CoveDatabaseAdapter {
   }
 
   public createClaim(claimData: Omit<(typeof SEED_CLAIMS)[0], "id" | "currentStageEnteredAt">) {
+    const project = this.projects.find((p) => p.id === claimData.projectId);
+    const orgId = (claimData as any).orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "CREATE_CLAIM");
+
     const newId = "clm-" + Math.random().toString(36).substring(2, 9);
     const newClaim = { ...claimData, id: newId, currentStageEnteredAt: new Date().toISOString() };
     this.claims.unshift(newClaim);
@@ -1527,12 +2386,20 @@ class CoveDatabaseAdapter {
   public updateClaimCertifiedValue(claimId: string, newCertifiedValue: number, user: string = "Dimas Sucipto") {
     const claim = this.claims.find((c) => c.id === claimId);
     if (!claim) throw new Error("Claim not found in database");
+    const project = this.projects.find((p) => p.id === claim.projectId);
+    const orgId = (claim as any).orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "TRANSITION_CLAIM");
+
     claim.certifiedValue = newCertifiedValue;
   }
 
   public transitionClaim(claimId: string, targetStage: ClaimStage, reason?: string, userId?: string) {
     const claim = this.claims.find((c) => c.id === claimId);
     if (!claim) throw new Error("Claim not found in database");
+    const project = this.projects.find((p) => p.id === claim.projectId);
+    const orgId = (claim as any).orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "TRANSITION_CLAIM");
+
     claim.currentStage = targetStage;
     claim.currentStageEnteredAt = new Date().toISOString();
   }
@@ -1560,6 +2427,10 @@ class CoveDatabaseAdapter {
     },
     actorName: string = "System"
   ) {
+    const project = this.projects.find((p) => p.id === actionData.projectId);
+    const orgId = (actionData as any).orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "CREATE_ACTION");
+
     // ACT-001: Must be linked to at least 1 exposure
     if (actionData.financialExposure === undefined || actionData.financialExposure < 0) {
       throw new Error("Action harus memiliki nilai financial exposure yang terikat (ACT-001).");
@@ -1626,6 +2497,10 @@ class CoveDatabaseAdapter {
     const action = this.actions.find((a) => a.id === actionId);
     if (!action) throw new Error("Action not found in database");
 
+    const project = this.projects.find((p) => p.id === action.projectId);
+    const orgId = (action as any).orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "RESOLVE_ACTION");
+
     // ACT-006, UAT-09: Mandatory closure reason (min 5 chars)
     if (!resolutionNotes || resolutionNotes.trim().length < 5) {
       throw new Error("Alasan penutupan (Closure Reason) wajib diisi minimal 5 karakter (ACT-006).");
@@ -1688,6 +2563,10 @@ class CoveDatabaseAdapter {
   public reopenAction(actionId: string, reopenReason: string, actorName: string = "Dimas Sucipto (Commercial Manager)") {
     const action = this.actions.find((a) => a.id === actionId);
     if (!action) throw new Error("Action not found in database");
+
+    const project = this.projects.find((p) => p.id === action.projectId);
+    const orgId = (action as any).orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "REOPEN_ACTION");
 
     if (!reopenReason || reopenReason.trim().length < 5) {
       throw new Error("Membuka kembali tindakan yang telah selesai wajib menyertakan alasan (Reopen Reason) minimal 5 karakter (ACT-014).");
@@ -2018,7 +2897,11 @@ class CoveDatabaseAdapter {
     if (!invoice) throw new Error("Invoice not found in database");
     invoice.cashReceivedAmount += data.amount;
     invoice.outstandingAmount = Math.max(0, invoice.netReceivableAmount - invoice.cashReceivedAmount);
-    if (invoice.outstandingAmount === 0) invoice.status = "paid";
+    if (invoice.outstandingAmount === 0) {
+      invoice.status = "paid";
+    } else if (invoice.cashReceivedAmount > 0) {
+      invoice.status = "partially_paid";
+    }
   }
 
   public submitDetailedFeedback(feedback: Omit<DetailedFeedbackSubmission, "id" | "timestamp" | "status">) {
@@ -2122,20 +3005,47 @@ class CoveDatabaseAdapter {
     return user;
   }
 
-  public inviteUser(userData: { email: string; fullName: string; role: Role; jobTitle?: string; phone?: string; assignedProjectIds?: string[] }, actorName: string = "Admin") {
+  public inviteUser(userData: { email: string; fullName: string; role: Role; jobTitle?: string; phone?: string; assignedProjectIds?: string[]; orgId?: string }, actorName: string = "Admin") {
+    const orgId = userData.orgId || "org-nusantara-01";
+
+    // Check if user already exists in this organization (re-invite pattern)
+    const existing = this.profiles.find(
+      (p) => p.email.toLowerCase() === userData.email.toLowerCase() && ((p as any).orgId || "org-nusantara-01") === orgId
+    );
+    if (existing) {
+      // Re-invitation does not create a new seat consumption.
+      // Still enforce general canMutate policy for the tenant, but skip seat quota check.
+      const evaluation = this.getTenantEntitlement(orgId);
+      if (!evaluation.canMutate) {
+        throw new Error(`[ENTITLEMENT_GUARD_REJECTED] ${evaluation.reason || "Akun berada dalam mode Baca-Saja (READ_ONLY)."}`);
+      }
+      return existing;
+    }
+
+    this.ensureCanMutate(orgId, "INVITE_USER");
+
     const newId = "usr-" + Math.random().toString(36).substring(2, 9);
     const newProfile: (typeof SEED_PROFILES)[0] = {
       id: newId,
+      orgId,
       fullName: userData.fullName,
       email: userData.email,
       phone: userData.phone || "-",
       role: userData.role,
       jobTitle: userData.jobTitle || userData.role,
-      status: "ACTIVE",
+      status: "INVITED",
       mfaEnabled: userData.role === "OWNER" || userData.role === "ADMIN",
       assignedProjectIds: userData.assignedProjectIds || [],
     };
     this.profiles.push(newProfile);
+
+    this.organizationMembers.push({
+      id: "omem-" + Math.random().toString(36).substring(2, 9),
+      organizationId: orgId,
+      userId: newId,
+      role: userData.role,
+      status: "invited",
+    });
 
     if (userData.assignedProjectIds && userData.assignedProjectIds.length > 0) {
       for (const prjId of userData.assignedProjectIds) {
@@ -2162,6 +3072,30 @@ class CoveDatabaseAdapter {
     });
 
     return newProfile;
+  }
+
+  // Phase 16R.2: Concurrency-Proof Atomic Operations
+  public async inviteUserConcurrent(
+    userData: { email: string; fullName: string; role: Role; jobTitle?: string; phone?: string; assignedProjectIds?: string[]; orgId?: string },
+    actorName: string = "Admin"
+  ) {
+    const orgId = userData.orgId || "org-nusantara-01";
+    return this.acquireTenantLock(orgId, async () => {
+      // Yield to event loop to simulate realistic async I/O / DB latency across parallel requests
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return this.inviteUser(userData, actorName);
+    });
+  }
+
+  public async createProjectWithContractConcurrent(
+    data: Parameters<CoveDatabaseAdapter["createProjectWithContract"]>[0],
+    actorName: string = "Admin"
+  ) {
+    const orgId = data.project.orgId || "org-nusantara-01";
+    return this.acquireTenantLock(orgId, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return this.createProjectWithContract(data, actorName);
+    });
   }
 
   public grantAssistedAccess(data: { orgId: string; grantedByUserId: string; supportEngineerEmail: string; reason: string; durationHours: number; assignedProjectIds: string[] }, actorName: string = "Admin") {
@@ -2373,6 +3307,7 @@ class CoveDatabaseAdapter {
         city: string;
         contractStartDate: string;
         contractFinishDate: string;
+        orgId?: string;
         projectManagerId?: string;
         commercialManagerId?: string;
         financeOwnerId?: string;
@@ -2400,12 +3335,16 @@ class CoveDatabaseAdapter {
     },
     actorName: string = "Admin"
   ) {
+    const orgId = data.project.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "CREATE_PROJECT");
+
     const newProjId = "prj-" + Math.random().toString(36).substring(2, 9);
     const newCtrId = "ctr-" + Math.random().toString(36).substring(2, 9);
     const newRuleId = "rule-" + Math.random().toString(36).substring(2, 9);
 
     const fullProject = {
       id: newProjId,
+      orgId,
       clientId: data.project.clientId,
       projectCode: data.project.projectCode,
       projectName: data.project.projectName,
@@ -2607,6 +3546,7 @@ class CoveDatabaseAdapter {
   public commitImportBatch(
     data: {
       projectId: string;
+      orgId?: string;
       fileName: string;
       fileSizeBytes: number;
       fileChecksum: string;
@@ -2629,6 +3569,10 @@ class CoveDatabaseAdapter {
     },
     actorName: string = "QS Engineer"
   ): { importBatch: DemoSourceImport; createdClaimsCount: number; updatedClaimsCount: number } {
+    const project = this.projects.find((p) => p.id === data.projectId);
+    const orgId = data.orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "COMMIT_IMPORT");
+
     const importId = "imp-" + Math.random().toString(36).substring(2, 9);
     const contract = this.contracts.find((c) => c.projectId === data.projectId) || this.contracts[0];
 
@@ -2901,6 +3845,11 @@ class CoveDatabaseAdapter {
     const item = this.claimReadinessItems.find((i) => i.claimId === claimId && i.id === itemId);
     if (!item) throw new Error("Claim readiness item not found");
 
+    const claim = this.claims.find((c) => c.id === claimId);
+    const project = this.projects.find((p) => p.id === claim?.projectId);
+    const orgId = (claim as any)?.orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "UPDATE_READINESS");
+
     const oldStatus = item.status;
     if (updates.status) item.status = updates.status;
     if (updates.documentUrl !== undefined) item.documentUrl = updates.documentUrl;
@@ -2926,7 +3875,6 @@ class CoveDatabaseAdapter {
         i.status !== "VERIFIED"
     );
 
-    const claim = this.claims.find((c) => c.id === claimId);
     if (claim) {
       if (unverifiedBlocking.length === 0 && allItems.length > 0) {
         claim.readinessStatus = "READY";
@@ -2991,6 +3939,10 @@ class CoveDatabaseAdapter {
   ): DemoClaim {
     const claim = this.claims.find((c) => c.id === claimId);
     if (!claim) throw new Error("Claim not found");
+    const project = this.projects.find((p) => p.id === claim.projectId);
+    const orgId = (claim as any)?.orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "OVERRIDE_CHECKLIST");
+
     if (!approverName || !approverName.trim()) throw new Error("Authorized approver is mandatory (RDY-009)");
     if (!reason || !reason.trim()) throw new Error("Mandatory business reason is required for readiness override (RDY-009)");
 
@@ -3022,6 +3974,10 @@ class CoveDatabaseAdapter {
   ): DemoClaim {
     const claim = this.claims.find((c) => c.id === claimId);
     if (!claim) throw new Error("Claim not found");
+    const project = this.projects.find((p) => p.id === claim.projectId);
+    const orgId = (claim as any)?.orgId || (project as any)?.orgId || "org-nusantara-01";
+    this.ensureCanMutate(orgId, "TRANSITION_CLAIM");
+
     if (!rejectionReason || !rejectionReason.trim()) throw new Error("Rejection reason is mandatory (RDY-012)");
 
     claim.resubmissionCount = (claim.resubmissionCount || 0) + 1;

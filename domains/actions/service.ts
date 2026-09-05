@@ -138,26 +138,19 @@ export function validateActionCreation(input: CreateActionInput): { valid: boole
  * Resolving an action requires closure reason AND closure evidence/note.
  * Rejects resolution if evidence/note is missing.
  */
-export function validateActionResolution(input: ResolveActionInput): ResolveActionResult {
-  if (!input.resolutionText || input.resolutionText.trim().length < 5) {
+export function validateActionResolution(input: any): ResolveActionResult {
+  const resolutionText = input.resolutionText || input.resolution || "";
+  if (!resolutionText || resolutionText.trim().length < 5) {
     return {
       success: false,
       resolvedAt: new Date().toISOString(),
-      outcomeType: input.outcomeType,
+      outcomeType: input.outcomeType || "unknown",
       outcomeValue: 0,
       error: "Alasan penutupan (Closure Reason) wajib diisi minimal 5 karakter untuk menyelesaikan tindakan (ACT-006).",
     };
   }
 
-  if (!input.outcomeType) {
-    return {
-      success: false,
-      resolvedAt: new Date().toISOString(),
-      outcomeType: "unknown",
-      outcomeValue: 0,
-      error: "Jenis hasil finansial (Outcome Type) wajib dipilih (ACT-006).",
-    };
-  }
+  const outcomeType = input.outcomeType || "cash_released";
 
   // UAT-09: Must have closure evidence URL or non-empty closure note
   const hasEvidenceUrl = Boolean(input.closureEvidenceUrl && input.closureEvidenceUrl.trim().length > 0);

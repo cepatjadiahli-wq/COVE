@@ -268,6 +268,7 @@ export function GeotagPhotoUploader({
 
             {/* Live Watermarked Image Preview */}
             <div className="rounded-lg overflow-hidden border border-slate-300 shadow-sm max-h-80 relative bg-black flex items-center justify-center">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={watermarkedImage}
                 alt="Watermarked Evidence"

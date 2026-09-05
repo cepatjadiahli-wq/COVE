@@ -387,7 +387,7 @@ export default function InternalPilotsAdminPage() {
                         <div className="text-[11px] text-slate-500">{p.contactName} ({p.contactRole})</div>
                       </div>
                       <Button
-                        size="xs"
+                        size="sm"
                         onClick={() => {
                           setSelectedProspectId(p.id);
                           setShowLogOutreachModal(true);
@@ -499,7 +499,7 @@ export default function InternalPilotsAdminPage() {
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-1.5">
                             <Button
-                              size="xs"
+                              size="sm"
                               variant="outline"
                               onClick={() => {
                                 setSelectedProspectId(p.id);
@@ -510,7 +510,7 @@ export default function InternalPilotsAdminPage() {
                               Log Outreach
                             </Button>
                             <Button
-                              size="xs"
+                              size="sm"
                               onClick={() => {
                                 setSelectedProspectId(p.id);
                                 setShowDiscoveryModal(true);

@@ -1,0 +1,23 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requirePlatformAdmin } from "@/lib/auth/server-guard";
+import { adminBillingService } from "@/domains/billing/admin-service";
+
+export async function GET(req: NextRequest) {
+  const auth = await requirePlatformAdmin(req);
+  if (!auth.authorized) {
+    return NextResponse.json({ success: false, error: auth.error }, { status: auth.statusCode });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const page = parseInt(searchParams.get("page") || "1", 10);
+  const limit = parseInt(searchParams.get("limit") || "20", 10);
+  const search = searchParams.get("search") || undefined;
+  const status = searchParams.get("status") || undefined;
+
+  try {
+    const result = await adminBillingService.listInvoices({ page, limit, search, status });
+    return NextResponse.json({ success: true, ...result });
+  } catch (err: unknown) {
+    return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
+  }
+}

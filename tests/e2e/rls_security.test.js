@@ -7,10 +7,10 @@ function runRlsSecurityTest() {
   const orgB = { id: "org-B", name: "PT Mitra Sejahtera Konstruksi" };
 
   const userA = { id: "usr-A", orgId: orgA.id, role: "COMMERCIAL_MANAGER" };
-  const userB = { id: "usr-B", orgId: orgB.id, role: "COMMERCIAL_MANAGER" };
+  const _userB = { id: "usr-B", orgId: orgB.id, role: "COMMERCIAL_MANAGER" };
   const viewerA = { id: "usr-viewer", orgId: orgA.id, role: "VIEWER" };
-  const qsA = { id: "usr-qs", orgId: orgA.id, role: "QS" };
-  const financeA = { id: "usr-fin", orgId: orgA.id, role: "FINANCE_MANAGER" };
+  const _qsA = { id: "usr-qs", orgId: orgA.id, role: "QS" };
+  const _financeA = { id: "usr-fin", orgId: orgA.id, role: "FINANCE_MANAGER" };
 
   const dbProjects = [
     { id: "prj-A1", orgId: orgA.id, name: "Grand Meridian Tower" },

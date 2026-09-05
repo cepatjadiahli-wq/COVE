@@ -306,3 +306,38 @@ export function cloneChecklistToClaim(
     updatedAt: now,
   }));
 }
+
+// UAT and DoD Suite Compatibility Functions
+export function evaluateClaimReadiness(checklist: any[], overrideReady: boolean = false): any {
+  if (overrideReady) {
+    return { status: "READY", isReady: true, allowed: true };
+  }
+  const items = Array.isArray(checklist) ? checklist : [];
+  const requiredItems = items.filter((i) => i.isRequired || i.requirementLevel === "MANDATORY");
+  const missingRequired = requiredItems.filter((i) => i.status !== "VERIFIED" && i.status !== "ATTACHED");
+  const isReady = missingRequired.length === 0;
+  return {
+    status: isReady ? "READY" : "NOT_READY",
+    isReady,
+    allowed: isReady,
+    missingCount: missingRequired.length,
+  };
+}
+
+export function checkReadinessOverride(params: {
+  canOverrideRole?: boolean;
+  approverName?: string;
+  justification?: string;
+}): { valid: boolean; error?: string } {
+  if (!params.canOverrideRole) {
+    return { valid: false, error: "Unauthorized role for override" };
+  }
+  if (!params.approverName || !params.approverName.trim()) {
+    return { valid: false, error: "Approver name is required" };
+  }
+  if (!params.justification || !params.justification.trim()) {
+    return { valid: false, error: "Justification reason is required" };
+  }
+  return { valid: true };
+}
+

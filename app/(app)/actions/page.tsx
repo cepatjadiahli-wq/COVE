@@ -829,7 +829,7 @@ export default function ActionsPage() {
               >
                 {coveStore.projects.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name}
+                    {p.projectName}
                   </option>
                 ))}
               </Select>
