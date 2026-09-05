@@ -49,16 +49,20 @@ export default function PricingPage() {
   const handleSelectTier = async (tier: SubscriptionTier) => {
     setIsLoading(true);
     try {
-      const res = await fetch("/api/auth/session");
-      const data = await res.json().catch(() => ({}));
+      const res = await fetch("/api/auth/session", {
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache" },
+      });
 
       if (res.status === 401) {
-        // Clear potential legacy client-side localStorage session
-        const { createClient } = await import("@/lib/supabase/client");
+        // Clear potential legacy client-side localStorage session to prevent loop.
+        // Add reason=session_migration so login page shows one-time notice.
+        // This redirect must only happen once — login page will not redirect back here
+        // until the user explicitly clicks a plan after logging in.
         const supabase = createClient();
         await supabase.auth.signOut();
-        
-        window.location.href = `/login?plan=${tier.id}&returnTo=/pricing`;
+
+        window.location.href = `/login?reason=session_migration&plan=${tier.id}&returnTo=/pricing`;
         return;
       }
 
@@ -72,15 +76,17 @@ export default function PricingPage() {
         return;
       }
 
-      // If server session is fully valid (200 OK)
+      // Server session valid (200 OK)
       setSelectedTier(tier);
       setErrorMsg(null);
     } catch (err) {
       console.error("Session check failed", err);
+      setErrorMsg("Gagal memeriksa sesi. Silakan muat ulang halaman.");
     } finally {
       setIsLoading(false);
     }
   };
+
 
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -443,3 +449,5 @@ export default function PricingPage() {
     </div>
   );
 }
+
+// Build: v19.5.0 — SSR Cookie Repair (Phase 19E-R5)

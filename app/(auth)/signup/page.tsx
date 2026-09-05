@@ -3,26 +3,93 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Building2, Mail, Lock, User, Phone } from "lucide-react";
+import { Building2, Mail, Lock, User, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { createClient } from "@/lib/supabase/client";
 
 export default function SignUpPage() {
   const router = useRouter();
-  const [orgName, setOrgName] = useState("PT Kontraktor Baru Nusantara");
-  const [fullName, setFullName] = useState("Budi Santoso");
-  const [email, setEmail] = useState("budi@kontraktorbaru.co.id");
-  const [password, setPassword] = useState("password123");
+  const [orgName, setOrgName] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [emailSent, setEmailSent] = useState(false);
 
-  const handleSignUp = (e: React.FormEvent) => {
+  const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
-      router.push("/dashboard");
-    }, 500);
+    setError(null);
+
+    if (password.length < 8) {
+      setError("Password harus minimal 8 karakter.");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const supabase = createClient();
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            full_name: fullName.trim(),
+            org_name: orgName.trim(),
+          },
+          // Auth callback handles session cookie after email confirmation
+          emailRedirectTo: `${window.location.origin}/api/auth/callback?returnTo=/onboarding`,
+        },
+      });
+
+      if (signUpError) {
+        if (signUpError.message.toLowerCase().includes("already registered") ||
+            signUpError.message.toLowerCase().includes("user already exists")) {
+          setError("Email sudah terdaftar. Silakan login dengan akun yang ada.");
+        } else {
+          setError(signUpError.message);
+        }
+        setLoading(false);
+        return;
+      }
+
+      // If email confirmation is disabled, session is immediately available
+      if (data.session) {
+        router.replace("/onboarding");
+        return;
+      }
+
+      // Email confirmation required
+      setEmailSent(true);
+      setLoading(false);
+    } catch {
+      setError("Terjadi kesalahan. Silakan coba lagi.");
+      setLoading(false);
+    }
   };
+
+  if (emailSent) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-xl shadow-2xl p-8 border border-slate-200 text-center">
+          <CheckCircle2 className="h-12 w-12 text-green-500 mx-auto mb-4" />
+          <h1 className="text-xl font-extrabold text-slate-900 mb-2">Periksa Email Anda</h1>
+          <p className="text-sm text-slate-600">
+            Kami mengirimkan tautan konfirmasi ke <strong>{email}</strong>. Klik tautan tersebut untuk mengaktifkan akun dan melanjutkan onboarding.
+          </p>
+          <Link
+            href="/login"
+            className="mt-6 inline-block text-sm text-blue-700 font-semibold hover:underline"
+          >
+            Kembali ke halaman login
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
@@ -34,6 +101,13 @@ export default function SignUpPage() {
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Create Organization</h1>
           <p className="text-xs text-slate-500 mt-1">Start tracking project progress-to-cash in COVE</p>
         </div>
+
+        {error && (
+          <div className="mb-4 flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-lg p-3 text-sm text-rose-800">
+            <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
 
         <form onSubmit={handleSignUp} className="space-y-4">
           <div>
@@ -47,6 +121,7 @@ export default function SignUpPage() {
                 onChange={(e) => setOrgName(e.target.value)}
                 className="pl-9"
                 placeholder="PT Nama Kontraktor"
+                disabled={loading}
               />
             </div>
           </div>
@@ -61,7 +136,8 @@ export default function SignUpPage() {
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 className="pl-9"
-                placeholder="Nama Lengkap Direktur / Commercial"
+                placeholder="Nama Lengkap"
+                disabled={loading}
               />
             </div>
           </div>
@@ -78,6 +154,8 @@ export default function SignUpPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 className="pl-9"
                 placeholder="name@company.com"
+                autoComplete="email"
+                disabled={loading}
               />
             </div>
           </div>
@@ -94,11 +172,17 @@ export default function SignUpPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 className="pl-9"
                 placeholder="Minimal 8 karakter"
+                autoComplete="new-password"
+                disabled={loading}
               />
             </div>
           </div>
 
-          <Button type="submit" disabled={loading} className="w-full mt-2 bg-slate-900 hover:bg-slate-800 font-bold h-10">
+          <Button
+            type="submit"
+            disabled={loading}
+            className="w-full mt-2 bg-slate-900 hover:bg-slate-800 font-bold h-10"
+          >
             {loading ? "Creating Organization..." : "Create Organization & Start"}
           </Button>
         </form>
