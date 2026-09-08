@@ -1,0 +1,6 @@
+import {createContext,useContext,useEffect,useState,type ReactNode,type AnchorHTMLAttributes} from 'react';
+type RouteContext={path:string;query:URLSearchParams;go:(to:string)=>void};
+const Context=createContext<RouteContext>(null!);
+export function Router({children}:{children:ReactNode}){const [url,setUrl]=useState(()=>location.pathname+location.search);useEffect(()=>{const update=()=>setUrl(location.pathname+location.search);window.addEventListener('popstate',update);return()=>window.removeEventListener('popstate',update);},[]);const go=(to:string)=>{if(!to.startsWith('/')||to.startsWith('//'))return;history.pushState({},'',to);setUrl(to);window.scrollTo({top:0,behavior:'instant'});};const [path,qs='']=url.split('?');useEffect(()=>{document.querySelector<HTMLElement>('#main-content')?.focus({preventScroll:true});},[path]);return <Context.Provider value={{path,query:new URLSearchParams(qs),go}}>{children}</Context.Provider>;}
+export function useRoute(){return useContext(Context);}
+export function Link({href='',onClick,...props}:AnchorHTMLAttributes<HTMLAnchorElement>){const {go}=useRoute();return <a href={href} onClick={e=>{onClick?.(e);if(!e.defaultPrevented&&e.button===0&&!e.ctrlKey&&!e.metaKey&&!e.shiftKey&&!e.altKey&&href.startsWith('/')&&!href.startsWith('//')){e.preventDefault();go(href);}}} {...props}/>;}
