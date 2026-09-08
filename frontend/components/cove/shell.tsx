@@ -3,7 +3,7 @@ import {LayoutDashboard,Building2,ListChecks,ReceiptText,ChartNoAxesCombined,Lif
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarMenu,SidebarMenuItem,SidebarMenuButton,useSidebar} from '@/components/ui/sidebar';
 import {DropdownMenu,DropdownMenuTrigger,DropdownMenuContent,DropdownMenuItem,DropdownMenuSeparator} from '@/components/ui/dropdown-menu';
 import {Button} from '@/components/ui/button';
-import {Link,useRoute} from '@/lib/router';import {useStore,type PreviewRole,type PreviewState} from '@/lib/store';
+import {Link,useRoute} from '@/lib/router';import {useStore,type TenantRole,type AppState} from '@/lib/store';
 import {Btn,Choice,Modal,Notice,Badge} from './ui';
 const navigation=[['Ringkasan','/dashboard',LayoutDashboard],['Proyek','/projects',Building2],['Tindakan','/actions',ListChecks],['Tagihan Proyek','/invoices',ReceiptText],['Laporan','/reports',ChartNoAxesCombined]] as const;
 const adminNav=[['Ringkasan SaaS','/admin',ChartNoAxesCombined],['Langganan & Pembayaran','/admin/billing',CreditCard],['Prospek & Recovery','/admin/recovery',Activity],['Dukungan Pelanggan','/admin/support',MessageSquare],['Usulan Fitur','/admin/features',Lightbulb],['Pengaturan Platform','/admin/settings',SlidersHorizontal]] as const;

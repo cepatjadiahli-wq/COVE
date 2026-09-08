@@ -29,9 +29,9 @@ export type TenantRole =
   | 'AUDITOR'
   | 'COVE_IMPLEMENTATION';
 
+export type AppState = 'normal' | 'empty' | 'loading' | 'error' | 'denied' | 'restricted' | 'stale' | 'conflict';
+export type PreviewState = AppState;
 export type PreviewRole = TenantRole;
-
-export type PreviewState = 'normal' | 'empty' | 'loading' | 'error' | 'denied' | 'restricted' | 'stale' | 'conflict';
 export type Draft = { title: string; description: string; at: string };
 
 function useWorkspaceStore() {
@@ -56,7 +56,7 @@ function useWorkspaceStore() {
   const [role, setRoleState] = useState<TenantRole | null>(null);
   const [company, setCompany] = useState('');
 
-  const [state, setState] = useState<PreviewState>('normal');
+  const [state, setState] = useState<AppState>('normal');
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [notice, setNotice] = useState('');
   const [subscription, setSubscription] = useState('Non-Aktif');

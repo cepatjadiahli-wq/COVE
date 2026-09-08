@@ -20,6 +20,7 @@ import {
   getIdentityRepository
 } from '../src/repositories/identity.repository.js';
 import {CANONICAL_MIGRATION_ORDER, getDiscoveredMigrations} from '../src/db/migrate.js';
+import {MayarService, setCheckoutClientOverride} from '../src/services/mayar.service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,7 +60,8 @@ before(() => {
     { id: 'prof-004', authUserId: 'usr-auth-admin', fullName: 'Admin Internal', status: 'ACTIVE' },
     { id: 'prof-005', authUserId: 'usr-auth-004', fullName: 'Bambang Auditor', status: 'ACTIVE' },
     { id: 'prof-006', authUserId: 'usr-auth-org2', fullName: 'Joko Rahasia', status: 'ACTIVE' },
-    { id: 'prof-multi', authUserId: 'usr-auth-multi', fullName: 'Multi Member', status: 'ACTIVE' }
+    { id: 'prof-multi', authUserId: 'usr-auth-multi', fullName: 'Multi Member', status: 'ACTIVE' },
+    { id: 'prof-onboarding', authUserId: 'usr-auth-onboarding', fullName: 'Calon Pendiri', status: 'ACTIVE' }
   ];
 
   // Seed test canonical memberships
@@ -108,6 +110,9 @@ before(() => {
     }
     if (token === 'token-multi') {
       return {user: {id: 'usr-auth-multi', email: 'multi@cove.id'}, error: null};
+    }
+    if (token === 'token-onboarding') {
+      return {user: {id: 'usr-auth-onboarding', email: 'pendiri@baru.co.id'}, error: null};
     }
     return {user: null, error: 'Token otentikasi tidak valid atau sudah kedaluwarsa.'};
   });
@@ -387,10 +392,11 @@ test('AUTH-14: Invitation frontend cannot locally activate subscription/membersh
   const accessFilePath = path.resolve(__dirname, '../../frontend/features/access.tsx');
   const content = fs.readFileSync(accessFilePath, 'utf-8');
 
-  // Verify InvitationPage does not mutate status/activePlan locally
+  // Verify InvitationPage body does not mutate status/activePlan locally
+  const invSnippet = content.slice(content.indexOf('function InvitationPage'), content.indexOf('function OnboardingCompanyPage'));
   assert.doesNotMatch(
-    content,
-    /export\s+function\s+InvitationPage[\s\S]*?status\s*:\s*['"]active['"]/,
+    invSnippet,
+    /status\s*:\s*['"]active['"]/,
     'InvitationPage DILARANG secara lokal mengaktifkan subscription'
   );
 });
@@ -402,21 +408,38 @@ test('AUTH-15: Checkout uses backend endpoint and no hardcoded VA exists', async
   // Verify no hardcoded VA
   assert.doesNotMatch(content, /8829-0123-9981-4402/, 'Hardcoded VA 8829-0123-9981-4402 DILARANG');
 
-  // Verify backend checkout endpoint produces dynamic transaction ref
-  const res = await app.request('/api/billing/checkout', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer token-owner'
-    },
-    body: JSON.stringify({ planId: 'scale' })
-  });
-  assert.strictEqual(res.status, 200);
-  const data = await res.json();
-  assert.strictEqual(data.success, true);
-  assert.strictEqual(data.data.planId, 'scale');
-  assert.match(data.data.checkoutRef, /^COV-PAY-\d+/);
-  assert.match(data.data.paymentUrl, /^https:\/\/checkout\.mayar\.id\/pay\/COV-PAY-\d+/);
+  // Verify backend checkout endpoint integrates with provider (or returns 503 if unconfigured)
+  setCheckoutClientOverride(async (params) => ({
+    success: true,
+    data: {
+      checkoutRef: 'chk_prov_scale_001',
+      planId: params.planId,
+      subtotal: 9900000,
+      tax: 1089000,
+      total: 10989000,
+      paymentUrl: 'https://checkout.mayar.id/pay/chk_prov_scale_001',
+      status: 'PENDING'
+    }
+  }));
+
+  try {
+    const res = await app.request('/api/billing/checkout', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer token-owner'
+      },
+      body: JSON.stringify({ planId: 'scale' })
+    });
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.success, true);
+    assert.strictEqual(data.data.planId, 'scale');
+    assert.strictEqual(data.data.checkoutRef, 'chk_prov_scale_001');
+    assert.strictEqual(data.data.paymentUrl, 'https://checkout.mayar.id/pay/chk_prov_scale_001');
+  } finally {
+    setCheckoutClientOverride(null);
+  }
 });
 
 test('AUTH-16: Platform admin without membership is never tenant ADMIN', async () => {
@@ -530,19 +553,414 @@ test('AUTH-20: Multi-membership ambiguity does not silently select first members
   assert.strictEqual(resUnauthorized.status, 403, 'Unauthorized tenant selection must return HTTP 403');
 });
 
-test('MIGRATION-ORDER: 003b_platform_admin_foundation executes before 004 and 005', () => {
+test('MIGRATION-ORDER: Canonical migrations execute in strict order without 003_seed_data', () => {
   const migrations = getDiscoveredMigrations();
-  const idx003 = migrations.indexOf('003_seed_data.sql');
   const idx003b = migrations.indexOf('003b_platform_admin_foundation.sql');
   const idx004 = migrations.indexOf('004_extended_growth_feedback_schema.sql');
   const idx005 = migrations.indexOf('005_identity_access_hardening.sql');
 
-  assert.ok(idx003 !== -1, '003_seed_data.sql must exist');
   assert.ok(idx003b !== -1, '003b_platform_admin_foundation.sql must exist');
   assert.ok(idx004 !== -1, '004_extended_growth_feedback_schema.sql must exist');
   assert.ok(idx005 !== -1, '005_identity_access_hardening.sql must exist');
 
-  assert.ok(idx003b > idx003, '003b must execute after 003');
   assert.ok(idx003b < idx004, '003b must execute BEFORE 004');
   assert.ok(idx004 < idx005, '004 must execute BEFORE 005');
 });
+
+// ============================================================================
+// GATE P0-A.2 FINAL IDENTITY & AUTHORITY REMEDIATION TESTS (AUTH-21 to AUTH-35)
+// ============================================================================
+
+test('AUTH-21: SignUp without confirmed session leaves user unauthenticated', () => {
+  const accessFilePath = path.resolve(__dirname, '../../frontend/features/access.tsx');
+  const code = fs.readFileSync(accessFilePath, 'utf-8');
+
+  // Verify that SignupPage inspects session and does not set signedIn = true
+  assert.ok(code.includes('signUpData?.session'), 'SignupPage must inspect signUpData?.session');
+  assert.ok(code.includes('/verify-email'), 'Unconfirmed signup must navigate to /verify-email');
+  
+  // Verify that signedIn is not set unconditionally in SignupPage
+  const signupSnippet = code.slice(code.indexOf('function SignupPage'), code.indexOf('function VerifyEmailPage'));
+  assert.strictEqual(
+    signupSnippet.includes('signedIn: true'),
+    false,
+    'SignupPage must not set signedIn: true'
+  );
+});
+
+test('AUTH-22: UI clicks after signup cannot enter protected app without real session', async () => {
+  // 1. Backend: unauthenticated requests to protected endpoints return 401
+  const resProjects = await app.request('/api/projects');
+  assert.strictEqual(resProjects.status, 401);
+
+  const resAdmin = await app.request('/api/admin/metrics');
+  assert.strictEqual(resAdmin.status, 401);
+
+  // 2. Frontend: OnboardingProjectPage guards against unauthenticated actor
+  const accessFilePath = path.resolve(__dirname, '../../frontend/features/access.tsx');
+  const code = fs.readFileSync(accessFilePath, 'utf-8');
+  assert.ok(
+    code.includes("authStatus !== 'authenticated' || !s.actor"),
+    'OnboardingProjectPage must guard against unauthenticated actor'
+  );
+});
+
+test('AUTH-23: Forgot password redirect contains /reset-password', () => {
+  const accessFilePath = path.resolve(__dirname, '../../frontend/features/access.tsx');
+  const code = fs.readFileSync(accessFilePath, 'utf-8');
+  assert.ok(
+    code.includes('/reset-password'),
+    'ForgotPasswordPage must include /reset-password redirect target'
+  );
+});
+
+test('AUTH-24: /reset-password route exists and calls updateUser()', () => {
+  const appFilePath = path.resolve(__dirname, '../../frontend/app/App.tsx');
+  const appCode = fs.readFileSync(appFilePath, 'utf-8');
+  assert.ok(
+    appCode.includes("path === '/reset-password'"),
+    'App.tsx must include /reset-password route'
+  );
+  assert.ok(
+    appCode.includes('ResetPasswordPage'),
+    'App.tsx must render ResetPasswordPage'
+  );
+
+  const accessFilePath = path.resolve(__dirname, '../../frontend/features/access.tsx');
+  const accessCode = fs.readFileSync(accessFilePath, 'utf-8');
+  assert.ok(
+    accessCode.includes('supabase.auth.updateUser({ password })'),
+    'ResetPasswordPage must call supabase.auth.updateUser({ password })'
+  );
+});
+
+test('AUTH-25: Organization onboarding cannot mark complete locally without server write', async () => {
+  // 1. Unauthenticated request to POST /api/organizations is rejected
+  const resUnauth = await app.request('/api/organizations', {
+    method: 'POST',
+    body: JSON.stringify({ legalName: 'PT Fraudulent' })
+  });
+  assert.strictEqual(resUnauth.status, 401);
+
+  // 2. Authenticated user without org creates organization on server
+  const resCreate = await app.request('/api/organizations', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-onboarding',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      legalName: 'PT Maju Terus Konstruksi',
+      displayName: 'Maju Terus'
+    })
+  });
+  assert.strictEqual(resCreate.status, 201);
+  const bodyCreate = await resCreate.json();
+  assert.strictEqual(bodyCreate.success, true);
+  assert.strictEqual(bodyCreate.data.organization.legalName, 'PT Maju Terus Konstruksi');
+  assert.strictEqual(bodyCreate.data.membership.role, 'OWNER');
+
+  // Verify identity repository has the new organization and membership persisted
+  const org = await testRepo.getOrganizationById(bodyCreate.data.organization.id);
+  assert.ok(org, 'Created organization must exist in repository');
+  const memberships = await testRepo.getActiveMembershipsByProfileId('prof-onboarding');
+  assert.strictEqual(memberships.length, 1);
+  assert.strictEqual(memberships[0].role, 'OWNER');
+});
+
+test('AUTH-26: Payment status page contains no journey.status authority', async () => {
+  const accessFilePath = path.resolve(__dirname, '../../frontend/features/access.tsx');
+  const accessCode = fs.readFileSync(accessFilePath, 'utf-8');
+  
+  // Verify that journey.status === 'pending' is completely eliminated
+  assert.strictEqual(
+    accessCode.includes("journey.status === 'pending'"),
+    false,
+    "PaymentStatusPage must not have journey.status === 'pending' fallback"
+  );
+  assert.ok(
+    accessCode.includes('api.getBilling()'),
+    'PaymentStatusPage must derive status from api.getBilling()'
+  );
+
+  // Backend GET /api/billing returns canonical server-derived status
+  const res = await app.request('/api/billing', {
+    headers: { Authorization: 'Bearer token-owner' }
+  });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.success, true);
+  assert.ok(['NONE', 'PENDING', 'ACTIVE', 'FAILED', 'EXPIRED'].includes(body.data.status));
+});
+
+test('AUTH-27: Checkout contains no synthetic checkout URL generator', () => {
+  const billingRoutePath = path.resolve(__dirname, '../src/routes/billing.ts');
+  const billingCode = fs.readFileSync(billingRoutePath, 'utf-8');
+  assert.strictEqual(
+    billingCode.includes('COV-PAY-'),
+    false,
+    'Billing route must not contain synthetic COV-PAY- URL generator'
+  );
+
+  const mayarServicePath = path.resolve(__dirname, '../src/services/mayar.service.ts');
+  const mayarCode = fs.readFileSync(mayarServicePath, 'utf-8');
+  assert.strictEqual(
+    mayarCode.includes('COV-PAY-'),
+    false,
+    'MayarService must not contain synthetic COV-PAY- URL generator'
+  );
+
+  const accessFilePath = path.resolve(__dirname, '../../frontend/features/access.tsx');
+  const accessCode = fs.readFileSync(accessFilePath, 'utf-8');
+  assert.strictEqual(
+    accessCode.includes('COV-PAY-'),
+    false,
+    'Frontend access.tsx must not contain synthetic COV-PAY- generator'
+  );
+});
+
+test('AUTH-28: Provider unavailable returns explicit PAYMENT_PROVIDER_NOT_CONFIGURED', async () => {
+  // 1. Without configuration and without mock override -> returns 503
+  setCheckoutClientOverride(null);
+  const resUnavailable = await app.request('/api/billing/checkout', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ planId: 'core' })
+  });
+  assert.strictEqual(resUnavailable.status, 503);
+  const bodyUnavailable = await resUnavailable.json();
+  assert.strictEqual(bodyUnavailable.error, 'PAYMENT_PROVIDER_NOT_CONFIGURED');
+
+  // 2. With mock provider configured -> returns 200 with checkout URL
+  setCheckoutClientOverride(async (params) => {
+    return {
+      success: true,
+      data: {
+        checkoutRef: 'chk_test_999',
+        planId: params.planId,
+        subtotal: 4900000,
+        tax: 0,
+        total: 4900000,
+        paymentUrl: 'https://checkout.mayar.id/chk_test_999',
+        status: 'PENDING'
+      }
+    };
+  });
+
+  try {
+    const resSuccess = await app.request('/api/billing/checkout', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer token-owner',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ planId: 'core' })
+    });
+    assert.strictEqual(resSuccess.status, 200);
+    const bodySuccess = await resSuccess.json();
+    assert.strictEqual(bodySuccess.success, true);
+    assert.strictEqual(bodySuccess.data.paymentUrl, 'https://checkout.mayar.id/chk_test_999');
+  } finally {
+    setCheckoutClientOverride(null);
+  }
+});
+
+test('AUTH-29: Production migration runner does NOT execute 003_seed_data.sql', () => {
+  assert.strictEqual(
+    (CANONICAL_MIGRATION_ORDER as readonly string[]).includes('003_seed_data.sql'),
+    false,
+    'CANONICAL_MIGRATION_ORDER must NOT contain 003_seed_data.sql'
+  );
+
+  const discovered = getDiscoveredMigrations();
+  assert.strictEqual(
+    discovered.includes('003_seed_data.sql'),
+    false,
+    'getDiscoveredMigrations() must NOT include 003_seed_data.sql'
+  );
+
+  const seedDevPath = path.resolve(__dirname, '../src/db/seed_dev.ts');
+  assert.ok(fs.existsSync(seedDevPath), 'Dedicated seed_dev.ts script must exist');
+  const seedCode = fs.readFileSync(seedDevPath, 'utf-8');
+  assert.ok(seedCode.includes("NODE_ENV === 'production'"), 'seed_dev.ts must check NODE_ENV');
+  assert.ok(seedCode.includes('ALLOW_DEV_SEED'), 'seed_dev.ts must require ALLOW_DEV_SEED');
+});
+
+test('AUTH-30: Clean PostgreSQL migration SQL chain executes successfully', async () => {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const pglite = new PGlite();
+
+  // Setup Supabase auth schema and test roles fixtures
+  await pglite.exec(`
+    CREATE SCHEMA IF NOT EXISTS auth;
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        CREATE ROLE authenticated;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        CREATE ROLE anon;
+      END IF;
+    END $$;
+    CREATE TABLE IF NOT EXISTS auth.users (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT UNIQUE,
+      encrypted_password TEXT,
+      email_confirmed_at TIMESTAMPTZ DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE OR REPLACE FUNCTION auth.uid() RETURNS UUID AS $$
+    BEGIN
+      RETURN '00000000-0000-0000-0000-000000000001'::UUID;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    CREATE OR REPLACE FUNCTION uuid_generate_v4() RETURNS UUID AS $$
+      SELECT gen_random_uuid();
+    $$ LANGUAGE sql;
+
+    INSERT INTO pg_extension (oid, extname, extowner, extnamespace, extrelocatable, extversion)
+    SELECT 16384, 'uuid-ossp', 10, oid, true, '1.1'
+    FROM pg_namespace WHERE nspname = 'public';
+  `);
+
+  const migrationsDir = path.resolve(__dirname, '../migrations');
+  for (const filename of CANONICAL_MIGRATION_ORDER) {
+    const filePath = path.join(migrationsDir, filename);
+    const sql = fs.readFileSync(filePath, 'utf-8');
+    await pglite.exec(sql);
+  }
+
+  // 1. Verify all tables exist (should have > 50 tables in public schema)
+  const resTables = await pglite.query<{ count: string }>(
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
+  );
+  assert.ok(parseInt(resTables.rows[0].count, 10) >= 50, 'Must have at least 50 public tables');
+
+  // 2. Verify foreign key constraints are established
+  const resFk = await pglite.query(
+    "SELECT constraint_name FROM information_schema.table_constraints WHERE constraint_name = 'fk_profiles_auth_user'"
+  );
+  assert.strictEqual(resFk.rows.length, 1, 'fk_profiles_auth_user must exist');
+
+  // 3. Verify security definer functions exist
+  const resFunc = await pglite.query(
+    "SELECT routine_name FROM information_schema.routines WHERE routine_name = 'current_user_org_ids'"
+  );
+  assert.strictEqual(resFunc.rows.length, 1, 'current_user_org_ids() routine must exist');
+
+  await pglite.close();
+});
+
+test('AUTH-31: Production team UI has no hardcoded members', () => {
+  const settingsFilePath = path.resolve(__dirname, '../../frontend/features/settings.tsx');
+  const settingsCode = fs.readFileSync(settingsFilePath, 'utf-8');
+  assert.strictEqual(settingsCode.includes('Andi Pratama'), false, 'Must not hardcode Andi Pratama');
+  assert.strictEqual(settingsCode.includes('Sari Wulandari'), false, 'Must not hardcode Sari Wulandari');
+  assert.strictEqual(settingsCode.includes('Dewi Lestari'), false, 'Must not hardcode Dewi Lestari');
+  assert.strictEqual(settingsCode.includes('Budi Santoso'), false, 'Must not hardcode Budi Santoso');
+  assert.ok(settingsCode.includes('s.actor'), 'Team list must be derived from session actor');
+});
+
+test('AUTH-32: Invitation cannot display success without backend success', () => {
+  const settingsFilePath = path.resolve(__dirname, '../../frontend/features/settings.tsx');
+  const settingsCode = fs.readFileSync(settingsFilePath, 'utf-8');
+  assert.ok(
+    settingsCode.includes('Undangan tim belum tersedia pada tahap ini.'),
+    'Invite button must show disabled notice'
+  );
+  assert.strictEqual(
+    settingsCode.includes('members.push'),
+    false,
+    'Must not simulate member addition locally'
+  );
+});
+
+test('AUTH-33: Privileged admin mutation fails if audit persistence fails (fail-closed)', async () => {
+  const originalRecordAudit = testRepo.recordAdminAuditLog;
+
+  try {
+    // 1. Simulate DB failure during audit write
+    testRepo.recordAdminAuditLog = async () => {
+      throw new Error('DATABASE CONNECTION CRITICAL FAILURE');
+    };
+
+    // 2. Mutating action -> must reject with HTTP 500
+    const resMutate = await app.request('/api/admin/recovery/template', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer token-platform-admin',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ leadId: 'lead-1', template: 'reminder' })
+    });
+    assert.strictEqual(resMutate.status, 500, 'Mutating admin route must fail-closed on audit failure');
+    const bodyMutate = await resMutate.json();
+    assert.strictEqual(bodyMutate.success, false);
+    assert.ok(bodyMutate.error.includes('Fail-Closed Enforcement'));
+
+    // 3. Read-only action -> still succeeds with warning
+    const resRead = await app.request('/api/admin/metrics', {
+      headers: { Authorization: 'Bearer token-platform-admin' }
+    });
+    assert.strictEqual(resRead.status, 200, 'Read-only admin route should not block completely');
+  } finally {
+    testRepo.recordAdminAuditLog = originalRecordAudit;
+  }
+});
+
+test('AUTH-34: x-organization-id in CORS allowHeaders and membership validated', async () => {
+  const indexFilePath = path.resolve(__dirname, '../src/index.ts');
+  const indexCode = fs.readFileSync(indexFilePath, 'utf-8');
+  assert.ok(indexCode.includes("'x-organization-id'"), 'CORS allowHeaders must include x-organization-id');
+
+  // Verify preflight OPTIONS response includes allow-headers
+  const resOptions = await app.request('/api/projects', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'http://localhost:3000',
+      'Access-Control-Request-Method': 'GET',
+      'Access-Control-Request-Headers': 'x-organization-id, authorization'
+    }
+  });
+  const allowHeaders = resOptions.headers.get('Access-Control-Allow-Headers') || '';
+  assert.ok(allowHeaders.toLowerCase().includes('x-organization-id'));
+
+  // Multi-membership check
+  const resValid = await app.request('/api/auth/me', {
+    headers: {
+      Authorization: 'Bearer token-multi',
+      'x-organization-id': 'org-001'
+    }
+  });
+  assert.strictEqual(resValid.status, 200);
+
+  const resForbidden = await app.request('/api/auth/me', {
+    headers: {
+      Authorization: 'Bearer token-multi',
+      'x-organization-id': 'org-unauthorized-999'
+    }
+  });
+  assert.strictEqual(resForbidden.status, 403);
+});
+
+test('AUTH-35: Platform role scopes in TypeScript and SQL constraint are aligned', () => {
+  const domainFilePath = path.resolve(__dirname, '../src/types/domain.ts');
+  const domainCode = fs.readFileSync(domainFilePath, 'utf-8');
+  assert.strictEqual(
+    domainCode.includes("'PRODUCT_MANAGER'"),
+    false,
+    'PlatformRoleScope must NOT include PRODUCT_MANAGER'
+  );
+
+  const migration004Path = path.resolve(__dirname, '../migrations/004_extended_growth_feedback_schema.sql');
+  const migration004Code = fs.readFileSync(migration004Path, 'utf-8');
+  assert.ok(
+    migration004Code.includes("role_scope IN ('SUPER_ADMIN', 'FINANCE_OPERATOR', 'GROWTH_OPERATOR', 'SUPPORT_AGENT')"),
+    '004 check constraint must strictly match PlatformRoleScope definition'
+  );
+});
+

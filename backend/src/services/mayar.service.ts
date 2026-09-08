@@ -4,6 +4,7 @@
 // ============================================================================
 
 import {db} from '../db/store.js';
+import {config} from '../config.js';
 import type {WebhookEventRecord} from '../types/domain.js';
 
 export interface MayarWebhookPayload {
@@ -18,7 +19,105 @@ export interface MayarWebhookPayload {
   };
 }
 
+export interface CheckoutResult {
+  success: boolean;
+  error?: string;
+  message?: string;
+  data?: {
+    checkoutRef: string;
+    planId: string;
+    subtotal: number;
+    tax: number;
+    total: number;
+    paymentUrl: string;
+    status: string;
+  };
+}
+
+// Hook for test provider mocking without hardcoding synthetic generator in production
+let checkoutClientOverride: ((params: { planId: string; customerName: string; customerEmail: string }) => Promise<CheckoutResult>) | null = null;
+
+export function setCheckoutClientOverride(override: typeof checkoutClientOverride): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('SECURITY VIOLATION: Mock checkout client can only be set in test environment.');
+  }
+  checkoutClientOverride = override;
+}
+
 export class MayarService {
+  /**
+   * Membuat sesi checkout Mayar riil melalui provider gateway
+   * Enforces:
+   * 1. Menolak fake success / synthetic URL generator
+   * 2. Jika API key belum terkonfigurasi: kembalikan PAYMENT_PROVIDER_NOT_CONFIGURED
+   */
+  public static async createCheckoutSession(params: {
+    planId: string;
+    customerName: string;
+    customerEmail: string;
+  }): Promise<CheckoutResult> {
+    if (checkoutClientOverride) {
+      return checkoutClientOverride(params);
+    }
+
+    if (!config.mayarApiKey || config.mayarApiKey === 'myr_dev_key_unconfigured' || config.mayarApiKey.startsWith('myr_test_')) {
+      return {
+        success: false,
+        error: 'PAYMENT_PROVIDER_NOT_CONFIGURED',
+        message: 'Layanan pembayaran SaaS Mayar belum dikonfigurasi di server.'
+      };
+    }
+
+    const amount = params.planId === 'pilot' ? 7500000 : params.planId === 'scale' ? 9900000 : 4900000;
+    const tax = Math.round(amount * 0.11);
+    const total = amount + tax;
+
+    try {
+      // Call actual Mayar API endpoint
+      const res = await fetch('https://api.mayar.id/hl/v1/payment/create', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.mayarApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: `COVE Subscription - Paket ${params.planId.toUpperCase()}`,
+          email: params.customerEmail,
+          amount: total,
+          description: `Langganan platform COVE paket ${params.planId}`
+        })
+      });
+
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: 'MAYAR_GATEWAY_ERROR',
+          message: `Provider Mayar mengembalikan error: ${res.status} ${errBody}`
+        };
+      }
+
+      const result: any = await res.json();
+      return {
+        success: true,
+        data: {
+          checkoutRef: result.data?.id || result.id,
+          planId: params.planId,
+          subtotal: amount,
+          tax,
+          total,
+          paymentUrl: result.data?.link || result.link,
+          status: 'PENDING'
+        }
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: 'PROVIDER_CONNECTION_ERROR',
+        message: err.message || 'Gagal menghubungi gateway pembayaran Mayar.'
+      };
+    }
+  }
   /**
    * Memproses callback webhook dari Mayar
    * Enforces:

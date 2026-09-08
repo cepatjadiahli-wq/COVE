@@ -20,8 +20,7 @@ export type PlatformRoleScope =
   | 'SUPER_ADMIN'
   | 'FINANCE_OPERATOR'
   | 'GROWTH_OPERATOR'
-  | 'SUPPORT_AGENT'
-  | 'PRODUCT_MANAGER';
+  | 'SUPPORT_AGENT';
 
 export interface RequestActor {
   authUserId: string;

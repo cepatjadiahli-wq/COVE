@@ -75,13 +75,16 @@ export async function requireAuth(c: Context, next: Next) {
   let selectedMembership: (typeof activeMemberships)[0] | null = null;
   if (activeMemberships.length === 0) {
     if (!isPlatformAdmin) {
-      return c.json({
-        success: false,
-        error: 'Pengguna tidak memiliki keanggotaan aktif pada organisasi tenant.'
-      }, 403);
+      // Allow onboarding and identity discovery routes for authenticated users who have not yet created/joined an organization
+      const isIdentityOrOnboardingRoute = c.req.path === '/api/auth/me' || c.req.path === '/api/organizations' || c.req.path === '/api/auth/profile';
+      if (!isIdentityOrOnboardingRoute) {
+        return c.json({
+          success: false,
+          error: 'Pengguna tidak memiliki keanggotaan aktif pada organisasi tenant.'
+        }, 403);
+      }
     }
-    // Platform admin without tenant membership:
-    // role = null, orgId = null, membershipId = null, isPlatformAdmin = true
+    // Platform admin without tenant membership or user completing onboarding
     selectedMembership = null;
   } else if (activeMemberships.length === 1) {
     const requestedOrgId = c.req.header('x-organization-id');
@@ -151,6 +154,7 @@ export async function requirePlatformAdmin(c: Context, next: Next) {
   }
 
   // Canonical Admin Audit Logging to PostgreSQL admin_audit_logs
+  const isMutating = c.req.method !== 'GET' && c.req.method !== 'HEAD' && c.req.method !== 'OPTIONS';
   try {
     const identityRepo = getIdentityRepository();
     const adminRecord = await identityRepo.getPlatformAdminByAuthUserId(actor.authUserId);
@@ -161,8 +165,14 @@ export async function requirePlatformAdmin(c: Context, next: Next) {
       requestSource: c.req.header('user-agent') || 'api',
       correlationId: `req-${Date.now()}`
     });
-  } catch (err) {
-    console.warn('Admin audit log failed:', err);
+  } catch (err: any) {
+    if (isMutating) {
+      return c.json({
+        success: false,
+        error: 'Operasi mutasi admin dibatalkan: Kegagalan pencatatan audit trail (Fail-Closed Enforcement).'
+      }, 500);
+    }
+    console.warn('Admin audit log failed for read-only route:', err);
   }
 
   await next();

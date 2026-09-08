@@ -37,6 +37,8 @@ export const api = {
 
   // Auth & Session
   getMe: () => request<any>('/auth/me'),
+  createOrganization: (data: { legalName: string; displayName?: string }) =>
+    request<any>('/organizations', { method: 'POST', body: JSON.stringify(data) }),
 
   // Projects
   getProjects: (archived = false) => request<any[]>(`/projects?archived=${archived}`),

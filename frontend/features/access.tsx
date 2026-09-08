@@ -35,7 +35,7 @@ function AuthForm({signup=false}:{signup?:boolean}) {
     setError('');
     try {
       if (signup) {
-        const { error: signUpError } = await supabase.auth.signUp({
+        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
           email: email.trim(),
           password,
           options: {
@@ -43,10 +43,16 @@ function AuthForm({signup=false}:{signup?:boolean}) {
           }
         });
         if (signUpError) throw signUpError;
-        const next = {...s.journey, enabled: true, signedIn: true, intent: plan};
-        s.setJourney(next);
         setPassword('');
-        go('/verify-email' + suffix);
+        // If session is created directly (e.g. auto-confirm enabled), reload server data
+        if (signUpData?.session) {
+          await s.reloadData();
+          go('/onboarding' + suffix);
+        } else {
+          // Email confirmation is required: user remains UNAUTHENTICATED.
+          // Zero manual signedIn = true state!
+          go('/verify-email' + suffix);
+        }
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({
           email: email.trim(),
@@ -54,10 +60,8 @@ function AuthForm({signup=false}:{signup?:boolean}) {
         });
         if (signInError) throw signInError;
         await s.reloadData();
-        const next = {...s.journey, enabled: true, signedIn: true, intent: plan};
-        s.setJourney(next);
         setPassword('');
-        go(afterAccess(next, plan, returnTo));
+        go(afterAccess(s.journey, plan, returnTo));
       }
     } catch(err: any) {
       setError(err.message || 'Gagal masuk ke server.');
@@ -106,7 +110,7 @@ export function ForgotPasswordPage(){
     setBusy(true);
     try {
       await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: window.location.origin + '/forgot-password'
+        redirectTo: window.location.origin + '/reset-password'
       });
       setNotice('Jika akun terdaftar, tautan pemulihan telah dikirim ke email tersebut.');
     } catch(err: any) {
@@ -131,6 +135,13 @@ export function ResetPasswordPage(){
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [hasSession, setHasSession] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setHasSession(!!session);
+    });
+  }, []);
 
   async function submitReset(e: FormEvent) {
     e.preventDefault();
@@ -160,6 +171,15 @@ export function ResetPasswordPage(){
       <AccessLayout title="Kata sandi berhasil diperbarui" description="Kredensial akun Anda telah diperbarui secara aman.">
         <Notice tone="info">Kata sandi baru Anda telah aktif. Silakan masuk kembali dengan kredensial baru.</Notice>
         <Link className="btn" href="/login">Masuk ke COVE <ArrowRight size={16}/></Link>
+      </AccessLayout>
+    );
+  }
+
+  if (hasSession === false) {
+    return (
+      <AccessLayout title="Sesi pemulihan tidak valid" description="Tautan pemulihan kata sandi mungkin telah kedaluwarsa atau tidak valid.">
+        <Notice tone="warning">Tidak ada sesi pemulihan aktif. Silakan minta tautan pemulihan kata sandi baru.</Notice>
+        <Link className="btn" href="/forgot-password">Minta Tautan Pemulihan <ArrowRight size={16}/></Link>
       </AccessLayout>
     );
   }
@@ -195,11 +215,37 @@ export function InvitationPage(){
 export function OnboardingCompanyPage(){
   const s=useStore();const {query,go}=useRoute();const plan=parsePlan(query.get('plan'))??s.journey.intent;
   const [company,setCompany]=useState(s.onboarding.company);const [legal,setLegal]=useState('PT');const [address,setAddress]=useState('');const [tax,setTax]=useState('');const [wa,setWa]=useState(false);const [error,setError]=useState('');
+  const [busy,setBusy]=useState(false);
+
   if(!s.journey.enabled||s.authStatus !== 'authenticated')return <AccessRequired/>;
   if(s.journey.invited)return <InvitationPage/>;
-  if(s.journey.status==='active')return <AccessLayout title="Perusahaan Anda sudah aktif" description="Kelola identitas dan langganan tanpa membuat checkout baru."><Link className="btn" href="/settings">Pengaturan Perusahaan</Link><Link className="text-link" href="/billing">Langganan COVE</Link></AccessLayout>;
-  function submit(e:FormEvent){e.preventDefault();if(!company.trim()||!address.trim()){setError('Lengkapi nama dan alamat perusahaan.');return;}s.setCompany(company.trim());s.setOnboarding(v=>({...v,company:company.trim()}));s.setConsents(v=>({...v,whatsapp:wa}));const next={...s.journey,companyComplete:true,intent:plan};s.setJourney(next);go(afterAccess(next,plan));}
-  return <AccessLayout title="Kenali perusahaan Anda." description="Identitas ini digunakan untuk organisasi dan tagihan layanan COVE. Belum perlu mengisi data proyek."><ProgressSteps current={1}/><PreviewDisclosure/><form onSubmit={submit} className="stack"><Field label="Nama legal perusahaan" required value={company} onChange={e=>setCompany(e.target.value)} placeholder="Contoh: PT Konstruksi Nusantara"/><Choice label="Bentuk usaha" value={legal} onChange={setLegal} options={['PT','CV','Lainnya']}/><Field label="Alamat perusahaan" multiline required value={address} onChange={e=>setAddress(e.target.value)}/><Field label="NPWP (opsional)" value={tax} onChange={e=>setTax(e.target.value)} hint="NPWP 15 atau 16 digit perusahaan untuk penerbitan faktur."/><CheckBox label="Saya bersedia dihubungi lewat WhatsApp tentang informasi layanan COVE (opsional)." checked={wa} onChange={setWa}/><p className="footnote">Izin ini terpisah dari analitik platform. Dapat ditarik kembali sewaktu-waktu.</p>{error&&<Notice tone="danger">{error}</Notice>}<Btn type="submit">Simpan Identitas Perusahaan <ArrowRight size={16}/></Btn></form></AccessLayout>;
+  if(s.company)return <AccessLayout title="Perusahaan Anda sudah aktif" description="Kelola identitas dan langganan tanpa membuat checkout baru."><Link className="btn" href="/settings">Pengaturan Perusahaan</Link><Link className="text-link" href="/billing">Langganan COVE</Link></AccessLayout>;
+
+  async function submit(e:FormEvent){
+    e.preventDefault();
+    if(!company.trim()||!address.trim()){
+      setError('Lengkapi nama dan alamat perusahaan.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      // Option A: Canonical server write to /api/organizations
+      await api.createOrganization({
+        legalName: company.trim(),
+        displayName: company.trim()
+      });
+      // Synchronize canonical state from backend
+      await s.reloadData();
+      go('/checkout' + intentQuery(plan));
+    } catch (err: any) {
+      setError(err.message || 'Gagal menyimpan identitas perusahaan ke server.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <AccessLayout title="Kenali perusahaan Anda." description="Identitas ini digunakan untuk organisasi dan tagihan layanan COVE. Belum perlu mengisi data proyek."><ProgressSteps current={1}/><PreviewDisclosure/><form onSubmit={submit} className="stack"><Field label="Nama legal perusahaan" required value={company} onChange={e=>setCompany(e.target.value)} placeholder="Contoh: PT Konstruksi Nusantara"/><Choice label="Bentuk usaha" value={legal} onChange={setLegal} options={['PT','CV','Lainnya']}/><Field label="Alamat perusahaan" multiline required value={address} onChange={e=>setAddress(e.target.value)}/><Field label="NPWP (opsional)" value={tax} onChange={e=>setTax(e.target.value)} hint="NPWP 15 atau 16 digit perusahaan untuk penerbitan faktur."/><CheckBox label="Saya bersedia dihubungi lewat WhatsApp tentang informasi layanan COVE (opsional)." checked={wa} onChange={setWa}/><p className="footnote">Izin ini terpisah dari analitik platform. Dapat ditarik kembali sewaktu-waktu.</p>{error&&<Notice tone="danger">{error}</Notice>}<Btn type="submit" disabled={busy}>{busy ? 'Menyimpan ke server…' : 'Simpan Identitas Perusahaan'} <ArrowRight size={16}/></Btn></form></AccessLayout>;
 }
 
 export function CheckoutPage(){
@@ -223,14 +269,15 @@ export function CheckoutPage(){
       if (!plan) return;
       const checkoutRes = await api.createCheckout(plan);
       if (checkoutRes && checkoutRes.paymentUrl) {
-        s.setJourney(v => ({...v, intent: plan, status: 'pending'}));
         window.location.href = checkoutRes.paymentUrl;
       } else {
-        s.setJourney(v => ({...v, intent: plan, status: 'pending'}));
-        go('/billing/status');
+        throw new Error('Penyedia pembayaran tidak mengembalikan URL pembayaran yang sah.');
       }
     } catch (err: any) {
-      setError(err.message || 'Gagal memulai checkout server.');
+      const msg = err.error === 'PAYMENT_PROVIDER_NOT_CONFIGURED' || err.message?.includes('PAYMENT_PROVIDER_NOT_CONFIGURED')
+        ? 'Pembayaran belum tersedia pada tahap ini (Penyedia pembayaran belum dikonfigurasi).'
+        : (err.message || 'Gagal memulai checkout server.');
+      setError(msg);
     } finally {
       setBusy(false);
     }
@@ -259,8 +306,7 @@ export function CheckoutPage(){
       {error && <Notice tone="danger">{error}</Notice>}
       <div className="button-row">
         <Btn disabled={busy} onClick={proceedToCheckout}>
-          {busy ? 'Menghubungi server Mayar…' : 'Lanjutkan ke Pembayaran Mayar'} <ArrowRight size={16}/>
-        </Btn>
+          {busy ? 'Menghubungi server Mayar…' : 'Lanjutkan ke Pembayaran Mayar'} <ArrowRight size={16}/></Btn>
       </div>
       <Link className="text-link" href="/pricing">Kembali ke paket</Link>
     </AccessLayout>
@@ -286,8 +332,15 @@ export function PaymentStatusPage(){
       .catch(() => {});
   }, []);
 
-  const isServerActive = serverBilling?.subscription?.status === 'ACTIVE' || s.subscription === 'Aktif';
-  const status = isServerActive ? 'active' : (s.journey.status === 'pending' ? 'pending' : 'none');
+  // 100% server-derived status (no journey.status or local fallbacks)
+  const rawStatus = (serverBilling?.status || serverBilling?.subscription?.status || '').toUpperCase();
+  const status: 'active' | 'pending' | 'failed' | 'expired' | 'none' =
+    rawStatus === 'ACTIVE' ? 'active' :
+    rawStatus === 'PENDING' ? 'pending' :
+    rawStatus === 'FAILED' ? 'failed' :
+    rawStatus === 'EXPIRED' ? 'expired' :
+    'none';
+
   const [title,desc] = statusCopy[status] || statusCopy.none;
 
   return (
@@ -327,7 +380,7 @@ export function PaymentStatusPage(){
 }
 export function OnboardingProjectPage(){
   const s=useStore();const {go}=useRoute();const [name,setName]=useState('');const [customer,setCustomer]=useState('');const [contract,setContract]=useState('');const [code,setCode]=useState('');const [location,setLocation]=useState('');const [step,setStep]=useState(0);const [error,setError]=useState('');
-  if(!s.journey.enabled||!s.journey.signedIn)return <AccessRequired/>;
+  if(s.authStatus !== 'authenticated' || !s.actor)return <AccessRequired/>;
   if(!canSetupProject(s.journey))return <AccessLayout title="Langganan aktif diperlukan" description="Setup proyek tersedia setelah identitas perusahaan dan entitlement aktif diverifikasi. Redirect atau checkout tidak cukup."><Link className="btn" href={afterAccess(s.journey,s.journey.intent)}>Lanjutkan proses langganan</Link></AccessLayout>;
   const limit=projectLimit(s.journey.activePlan);const active=s.projects.filter(p=>p.status==='Aktif').length;
   if(!s.writeable||s.role!=='OWNER')return <AccessLayout title="Minta pengelola menyiapkan proyek" description="Anda dapat bergabung pada proyek sesuai peran dan penugasan tanpa membeli paket pribadi."><Link className="btn" href="/support">Minta bantuan</Link></AccessLayout>;

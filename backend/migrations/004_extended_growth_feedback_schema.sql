@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS conversion_deliveries (
 -- §28. Support Ticket, Komplain, dan Lampiran
 CREATE TABLE IF NOT EXISTS support_internal_notes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    ticket_id UUID REFERENCES support_tickets(id) ON DELETE CASCADE,
+    ticket_id TEXT REFERENCES support_tickets(id) ON DELETE CASCADE,
     admin_id UUID REFERENCES platform_admins(id) ON DELETE SET NULL,
     note_body TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS support_internal_notes (
 
 CREATE TABLE IF NOT EXISTS feedback_attachments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    ticket_id UUID REFERENCES support_tickets(id) ON DELETE CASCADE,
+    ticket_id TEXT REFERENCES support_tickets(id) ON DELETE CASCADE,
     file_name TEXT NOT NULL,
     file_size_bytes BIGINT NOT NULL,
     mime_type TEXT NOT NULL,

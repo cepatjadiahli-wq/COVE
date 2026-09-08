@@ -17,7 +17,6 @@ const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 export const CANONICAL_MIGRATION_ORDER = [
   '001_initial_schema.sql',
   '002_rls_policies.sql',
-  '003_seed_data.sql',
   '003b_platform_admin_foundation.sql',
   '004_extended_growth_feedback_schema.sql',
   '005_identity_access_hardening.sql'
@@ -25,7 +24,8 @@ export const CANONICAL_MIGRATION_ORDER = [
 
 export function getDiscoveredMigrations(): string[] {
   if (!fs.existsSync(MIGRATIONS_DIR)) return [];
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql'));
+  // 003_seed_data.sql is strictly a development fixture and excluded from production migration runner
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql') && f !== '003_seed_data.sql');
   
   // Verify that all canonical migrations are present
   for (const required of CANONICAL_MIGRATION_ORDER) {

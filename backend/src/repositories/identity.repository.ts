@@ -24,6 +24,10 @@ export interface IIdentityRepository {
   getOrganizationById(orgId: string): Promise<OrganizationEntity | null>;
   getPlatformAdminByAuthUserId(authUserId: string): Promise<PlatformAdminRecord | null>;
   getPlatformRoleGrants(adminId: string): Promise<PlatformRoleScope[]>;
+  createOrganizationForProfile(
+    profileId: string,
+    data: { legalName: string; displayName?: string }
+  ): Promise<{ organization: OrganizationEntity; membership: OrganizationMembershipEntity }>;
   recordAdminAuditLog(log: {
     actorAdminId?: string;
     action: string;
@@ -135,6 +139,37 @@ export class PostgresIdentityRepository implements IIdentityRepository {
       log.requestSource || 'api'
     ]);
   }
+
+  public async createOrganizationForProfile(
+    profileId: string,
+    data: { legalName: string; displayName?: string }
+  ): Promise<{ organization: OrganizationEntity; membership: OrganizationMembershipEntity }> {
+    const client = await pgPool.connect();
+    try {
+      await client.query('BEGIN');
+      const orgRes = await client.query(`
+        INSERT INTO public.organizations (legal_name, display_name, status)
+        VALUES ($1, $2, 'ACTIVE')
+        RETURNING id, legal_name AS "legalName", display_name AS "displayName", timezone, default_currency AS "defaultCurrency", status, created_at AS "createdAt"
+      `, [data.legalName, data.displayName || data.legalName]);
+      const organization: OrganizationEntity = orgRes.rows[0];
+
+      const memRes = await client.query(`
+        INSERT INTO public.organization_memberships (org_id, profile_id, role, status)
+        VALUES ($1, $2, 'OWNER', 'ACTIVE')
+        RETURNING id, org_id AS "orgId", profile_id AS "profileId", role, status, joined_at AS "joinedAt"
+      `, [organization.id, profileId]);
+      const membership: OrganizationMembershipEntity = memRes.rows[0];
+
+      await client.query('COMMIT');
+      return { organization, membership };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 /**
@@ -202,6 +237,31 @@ export class InMemoryIdentityRepository implements IIdentityRepository {
       requestSource: log.requestSource,
       createdAt: new Date().toISOString()
     });
+  }
+
+  public async createOrganizationForProfile(
+    profileId: string,
+    data: { legalName: string; displayName?: string }
+  ): Promise<{ organization: OrganizationEntity; membership: OrganizationMembershipEntity }> {
+    const org: OrganizationEntity = {
+      id: `org-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      legalName: data.legalName,
+      displayName: data.displayName || data.legalName,
+      timezone: 'Asia/Jakarta',
+      defaultCurrency: 'IDR',
+      status: 'ACTIVE'
+    };
+    this.organizations.push(org);
+
+    const membership: OrganizationMembershipEntity = {
+      id: `mem-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      orgId: org.id,
+      profileId,
+      role: 'OWNER',
+      status: 'ACTIVE'
+    };
+    this.memberships.push(membership);
+    return { organization: org, membership };
   }
 }
 

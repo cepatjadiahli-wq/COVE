@@ -44,3 +44,45 @@ authRoute.get('/auth/me', requireAuth, async (c) => {
     }
   });
 });
+
+// POST /api/organizations
+// Creates a new organization for an authenticated actor and assigns OWNER role.
+authRoute.post('/organizations', requireAuth, async (c) => {
+  const actor = c.get('actor');
+  if (!actor || !actor.profileId) {
+    return c.json({
+      success: false,
+      error: 'Profil pengguna tidak teridentifikasi.'
+    }, 401);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const legalName = (body.legalName || '').trim();
+  const displayName = (body.displayName || legalName).trim();
+
+  if (!legalName) {
+    return c.json({
+      success: false,
+      error: 'Nama legal perusahaan wajib diisi.'
+    }, 400);
+  }
+
+  const identityRepo = getIdentityRepository();
+  try {
+    const result = await identityRepo.createOrganizationForProfile(actor.profileId, {
+      legalName,
+      displayName
+    });
+
+    return c.json({
+      success: true,
+      data: result
+    }, 201);
+  } catch (err: any) {
+    console.error('Failed to create organization:', err);
+    return c.json({
+      success: false,
+      error: err.message || 'Gagal membuat organisasi di basis data.'
+    }, 500);
+  }
+});

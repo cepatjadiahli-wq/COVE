@@ -18,6 +18,7 @@ import {
   SignupPage,
   VerifyEmailPage,
   ForgotPasswordPage,
+  ResetPasswordPage,
   OnboardingCompanyPage,
   CheckoutPage,
   PaymentStatusPage,
@@ -64,6 +65,7 @@ export default function App() {
   if (path === '/signup') return <SignupPage />;
   if (path === '/verify-email') return <VerifyEmailPage />;
   if (path === '/forgot-password') return <ForgotPasswordPage />;
+  if (path === '/reset-password') return <ResetPasswordPage />;
   if (path === '/onboarding') return <OnboardingCompanyPage />;
   if (path === '/checkout') return <CheckoutPage />;
   if (path === '/payment/status' || path === '/billing/status') return <PaymentStatusPage />;

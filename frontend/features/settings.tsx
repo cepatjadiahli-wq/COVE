@@ -194,25 +194,17 @@ export function CompanySettingsView(){
 
 export function TeamSettingsView(){
   const s=useStore();
-  const [inviteOpen,setInviteOpen]=useState(false);
-  const [name,setName]=useState('');
-  const [email,setEmail]=useState('');
-  const [role,setRole]=useState('QS');
 
-  const members=[
-    {name:'Andi Pratama',email:'andi@ruangkarya.co.id',role:'OWNER',roleLabel:'Pengelola Perusahaan',status:'Aktif'},
-    {name:'Sari Wulandari',email:'sari@ruangkarya.co.id',role:'QS',roleLabel:'Commercial & QS',status:'Aktif'},
-    {name:'Dewi Lestari',email:'dewi@ruangkarya.co.id',role:'FINANCE_MANAGER',roleLabel:'Finance Manager',status:'Aktif'},
-    {name:'Budi Santoso',email:'budi@ruangkarya.co.id',role:'PROJECT_MANAGER',roleLabel:'Project Manager',status:'Aktif'}
-  ];
-
-  const handleInvite=(e:FormEvent)=>{
-    e.preventDefault();
-    s.setNotice('Undangan berhasil dikirim ke '+email+' sebagai '+role+'.');
-    setInviteOpen(false);
-    setName('');
-    setEmail('');
-  };
+  // Production team members strictly derived from authenticated session actor
+  const members = s.actor ? [
+    {
+      name: s.actor.fullName || s.userName || 'Pengguna',
+      email: s.actor.email || s.userEmail || '',
+      role: s.role || 'MEMBER',
+      roleLabel: s.role === 'OWNER' ? 'Pengelola Perusahaan' : s.role || 'Anggota',
+      status: 'Aktif'
+    }
+  ] : [];
 
   return (
     <>
@@ -221,27 +213,25 @@ export function TeamSettingsView(){
         title="Tim & Peran"
         description="Kelola anggota tim internal perusahaan dan batas wewenang kerja komersial."
         action={
-          s.role==='OWNER' && (
-            <Btn onClick={()=>setInviteOpen(true)}>
-              <Plus size={16}/> Undang Anggota Tim
-            </Btn>
-          )
+          <Btn disabled title="Undangan tim belum tersedia pada tahap ini.">
+            <Plus size={16}/> Undangan tim belum tersedia pada tahap ini
+          </Btn>
         }
       />
 
       <StateBoundary>
         <div className="overview-inline">
-          <span>Pengguna aktif: <strong>4 dari 5 kuota</strong></span>
-          <span>Peran aktif saat ini: <strong>{s.role}</strong></span>
+          <span>Pengguna aktif: <strong>{members.length} staf terdaftar</strong></span>
+          <span>Peran aktif saat ini: <strong>{s.role || 'Belum memiliki peran'}</strong></span>
         </div>
 
         <Panel title="Daftar Staf & Hak Akses">
           <DataTable
             caption="Daftar Anggota Tim Perusahaan"
-            headers={['Nama & Email','Peran Sistem','Wewenang','Status','']}
+            headers={['Nama & Email','Peran Sistem','Wewenang','Status']}
             rows={members.map(m=>[
-              <div style={{display:'flex',alignItems:'center',gap:10}}>
-                <span className="avatar small">{m.name.split(' ').map(n=>n[0]).join('')}</span>
+              <div style={{display:'flex',alignItems:'center',gap:10}} key={m.email}>
+                <span className="avatar small">{m.name.split(' ').map((n: string)=>n[0]).join('')}</span>
                 <div>
                   <strong style={{color:'#fff',fontSize:14,display:'block'}}>{m.name}</strong>
                   <small style={{color:'#888',fontSize:12}}>{m.email}</small>
@@ -251,41 +241,11 @@ export function TeamSettingsView(){
               <span style={{fontSize:13,color:'#a3a3a3'}}>
                 {m.role==='OWNER'?'Akses penuh, Billing & Kontrak':m.role==='FINANCE_MANAGER'?'Invoice, AR & Pencatatan Kas':m.role==='QS'?'Opname, Klaim & Checklist':'Hambatan & Dokumen'}
               </span>,
-              <Badge tone="success">{m.status}</Badge>,
-              m.role!=='OWNER' && s.role==='OWNER' ? (
-                <button className="btn btn-outline" style={{minHeight:28,padding:'2px 8px',fontSize:11}} onClick={()=>s.setNotice('Mengubah hak akses '+m.name)}>
-                  Ubah Peran
-                </button>
-              ) : null
+              <Badge tone="success">{m.status}</Badge>
             ])}
           />
         </Panel>
       </StateBoundary>
-
-      <Modal open={inviteOpen} onClose={()=>setInviteOpen(false)} title="Undang Anggota Tim Baru">
-        <form onSubmit={handleInvite} className="stack" style={{gap:16}}>
-          <Field label="Nama Lengkap" required value={name} onChange={e=>setName(e.target.value)}/>
-          <Field label="Email Perusahaan" type="email" required value={email} onChange={e=>setEmail(e.target.value)}/>
-          <Choice
-            label="Peran Wewenang"
-            value={role}
-            onChange={setRole}
-            options={[
-              {value:'QS',label:'QS / Commercial — Opname, klaim & checklist volume'},
-              {value:'FINANCE_MANAGER',label:'Finance Manager — Buat invoice, kelola AR & kas'},
-              {value:'PROJECT_MANAGER',label:'Project Manager — Kendalikan hambatan & berita acara'},
-              {value:'AUDITOR',label:'Auditor — Akses baca & verifikasi kepatuhan (Read-Only)'}
-            ]}
-          />
-          <Notice tone="info">
-            Tautan undangan akan dikirimkan ke email tersebut untuk membuat kata sandi sendiri.
-          </Notice>
-          <div className="button-row">
-            <Btn secondary onClick={()=>setInviteOpen(false)}>Batal</Btn>
-            <Btn type="submit">Kirim Undangan</Btn>
-          </div>
-        </form>
-      </Modal>
     </>
   );
 }
