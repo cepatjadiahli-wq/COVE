@@ -49,9 +49,6 @@ import {
   AdminSettings
 } from '@/features/admin';
 
-// Preview Hub
-import {PreviewHub} from '@/features/preview';
-
 export default function App() {
   const {path} = useRoute();
   const s = useStore();
@@ -72,7 +69,6 @@ export default function App() {
   if (path === '/payment/status' || path === '/billing/status') return <PaymentStatusPage />;
   if (path === '/onboarding/project') return <OnboardingProjectPage />;
   if (path === '/invitation') return <InvitationPage />;
-  if (path === '/preview') return <PreviewHub />;
 
   // Admin Console Routes (Protected: Requires Platform Administrator Grant)
   if (path.startsWith('/admin')) {
@@ -98,7 +94,7 @@ export default function App() {
     );
   }
 
-  // Customer Workspace Routes (Protected: Requires Active Tenant Session)
+  // Customer Workspace Routes (Protected: 5-State Route Guard)
   if (
     path === '/dashboard' ||
     path === '/projects' ||
@@ -117,10 +113,29 @@ export default function App() {
         </main>
       );
     }
-    if (s.authStatus === 'unauthenticated') {
+    if (s.authStatus === 'unauthenticated' || !s.actor) {
       return <AccessRequired />;
     }
 
+    // State: authenticated-no-tenant
+    if (!s.actor.orgId) {
+      if (s.actor.isPlatformAdmin) {
+        return (
+          <main className="marketing" style={{display:'grid',placeItems:'center',minHeight:'100vh',textAlign:'center',padding:24}}>
+            <div style={{maxWidth:480}}>
+              <h2 style={{fontSize:24,color:'#fff',marginBottom:12}}>Akun Platform Administrator</h2>
+              <p style={{color:'#888',marginBottom:24}}>
+                Identitas Anda adalah Platform Administrator tanpa keanggotaan tenant kontraktor.
+              </p>
+              <a className="btn btn-white" href="/admin">Buka Admin Console</a>
+            </div>
+          </main>
+        );
+      }
+      return <OnboardingCompanyPage />;
+    }
+
+    // State: authenticated-tenant
     let content = <Dashboard />;
 
     if (path === '/dashboard') content = <Dashboard />;

@@ -4,28 +4,21 @@
 // ============================================================================
 
 import {createContext, useContext, useEffect, useState, useCallback, type ReactNode} from 'react';
-import {
-  projectsSeed,
-  actionsSeed,
-  invoicesSeed,
-  documentsSeed,
-  ticketsSeed,
-  featuresSeed,
-  recoveryLeadsSeed,
-  type Project,
-  type Action,
-  type Invoice,
-  type DocumentRecord,
-  type Ticket,
-  type Feature,
-  type RecoveryLead
+import type {
+  Project,
+  Action,
+  Invoice,
+  DocumentRecord,
+  Ticket,
+  Feature,
+  RecoveryLead
 } from './domain';
 import { INITIAL_JOURNEY, type Journey } from './journey';
 import { readConsent, saveConsent } from './privacy';
 import { api } from './api';
 import { supabase } from './supabase';
 
-export type PreviewRole =
+export type TenantRole =
   | 'OWNER'
   | 'ADMIN'
   | 'COMMERCIAL_MANAGER'
@@ -36,39 +29,37 @@ export type PreviewRole =
   | 'AUDITOR'
   | 'COVE_IMPLEMENTATION';
 
+export type PreviewRole = TenantRole;
+
 export type PreviewState = 'normal' | 'empty' | 'loading' | 'error' | 'denied' | 'restricted' | 'stale' | 'conflict';
 export type Draft = { title: string; description: string; at: string };
-
-function useSeed<T>(seed: T) {
-  return useState<T>(() => structuredClone(seed));
-}
 
 function useWorkspaceStore() {
   const [journey, setJourney] = useState<Journey>({ ...INITIAL_JOURNEY });
   const [tracking, setTracking] = useState({ enabled: false, verified: false, pixelId: '' });
   const [consentOpen, setConsentOpen] = useState(false);
-  const exitPreview = () => setJourney({ ...INITIAL_JOURNEY });
 
-  const [projects, setProjects] = useSeed<Project[]>(projectsSeed);
-  const [actions, setActions] = useSeed<Action[]>(actionsSeed);
-  const [invoices, setInvoices] = useSeed<Invoice[]>(invoicesSeed);
-  const [documents, setDocuments] = useSeed<DocumentRecord[]>(documentsSeed);
-  const [tickets, setTickets] = useSeed<Ticket[]>(ticketsSeed);
-  const [features, setFeatures] = useSeed<Feature[]>(featuresSeed);
-  const [recoveryLeads, setRecoveryLeads] = useSeed<RecoveryLead[]>(recoveryLeadsSeed);
+  // Production collections initialize empty (Section E: zero production seed runtime)
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [actions, setActions] = useState<Action[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [features, setFeatures] = useState<Feature[]>([]);
+  const [recoveryLeads, setRecoveryLeads] = useState<RecoveryLead[]>([]);
 
-  // Authentication & Actor State (PRD v2.2)
+  // Authentication & Actor State (PRD v2.2 / Section C: server-authoritative startup)
   const [authStatus, setAuthStatus] = useState<'loading' | 'authenticated' | 'unauthenticated'>('loading');
   const [actor, setActor] = useState<any | null>(null);
   const [userName, setUserName] = useState('');
   const [userEmail, setUserEmail] = useState('');
-  const [role, setRoleState] = useState<PreviewRole>('OWNER');
-  const [company, setCompany] = useState('PT Ruang Karya Konstruksi');
+  const [role, setRoleState] = useState<TenantRole | null>(null);
+  const [company, setCompany] = useState('');
 
   const [state, setState] = useState<PreviewState>('normal');
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [notice, setNotice] = useState('');
-  const [subscription, setSubscription] = useState('Aktif');
+  const [subscription, setSubscription] = useState('Non-Aktif');
   const [consents, setConsents] = useState(readConsent);
   const [readNotifications, setReadNotifications] = useState(false);
   const [onboarding, setOnboarding] = useState({ company: '', name: '', project: '', contract: '', customer: '', step: 0 });
@@ -95,12 +86,21 @@ function useWorkspaceStore() {
         setActor(meRes.value.actor || null);
         setUserName(user.name || '');
         setUserEmail(user.email || '');
-        setRoleState(user.role || 'OWNER');
-        if (user.company) setCompany(user.company);
+        setRoleState(user.role || null);
+        setCompany(user.company || '');
         setAuthStatus('authenticated');
+        setJourney(j => ({
+          ...j,
+          signedIn: true,
+          companyComplete: !!user.company,
+          status: billRes.status === 'fulfilled' && billRes.value?.subscription?.status === 'ACTIVE' ? 'active' : j.status
+        }));
       } else if (meRes.status === 'rejected') {
         // If 401/403 and no actor
         setAuthStatus('unauthenticated');
+        setActor(null);
+        setRoleState(null);
+        setCompany('');
       }
 
       if (projRes.status === 'fulfilled' && Array.isArray(projRes.value)) {
@@ -126,7 +126,7 @@ function useWorkspaceStore() {
     } finally {
       setIsLoading(false);
     }
-  }, [setProjects, setActions, setInvoices, setTickets, setFeatures]);
+  }, []);
 
   // Listen to Supabase Auth lifecycle
   useEffect(() => {
@@ -142,15 +142,23 @@ function useWorkspaceStore() {
               setActor(data.actor || null);
               setUserName(data.user.name || '');
               setUserEmail(data.user.email || '');
-              setRoleState(data.user.role || 'OWNER');
-              if (data.user.company) setCompany(data.user.company);
+              setRoleState(data.user.role || null);
+              setCompany(data.user.company || '');
               setAuthStatus('authenticated');
               reloadData();
             } else {
               setAuthStatus('unauthenticated');
+              setRoleState(null);
+              setActor(null);
+              setCompany('');
             }
           })
-          .catch(() => setAuthStatus('unauthenticated'));
+          .catch(() => {
+            setAuthStatus('unauthenticated');
+            setRoleState(null);
+            setActor(null);
+            setCompany('');
+          });
       }
     });
 
@@ -161,6 +169,11 @@ function useWorkspaceStore() {
       } else {
         setAuthStatus('unauthenticated');
         setActor(null);
+        setRoleState(null);
+        setCompany('');
+        setProjects([]);
+        setActions([]);
+        setInvoices([]);
       }
     });
 
@@ -228,10 +241,13 @@ function useWorkspaceStore() {
   const logout = async () => {
     await supabase.auth.signOut();
     setActor(null);
+    setRoleState(null);
+    setCompany('');
     setAuthStatus('unauthenticated');
     setProjects([]);
     setActions([]);
     setInvoices([]);
+    setJourney({ ...INITIAL_JOURNEY });
   };
 
   const createTicket = async (data: { title: string; body: string; category?: string; priority?: string }) => {
@@ -252,22 +268,22 @@ function useWorkspaceStore() {
     return newFeature;
   };
 
-  // Pure role permissions
-  const writeable = role !== 'AUDITOR' && role !== 'EXECUTIVE_VIEWER' && state !== 'restricted' && state !== 'denied';
-  const financial = writeable && ['OWNER', 'ADMIN', 'FINANCE_MANAGER', 'COVE_IMPLEMENTATION'].includes(role);
-  const commercial = writeable && ['OWNER', 'ADMIN', 'COMMERCIAL_MANAGER', 'QS', 'PROJECT_MANAGER', 'COVE_IMPLEMENTATION'].includes(role);
+  // Pure role permissions (Section S: no null role mutation authority)
+  const writeable = !!role && role !== 'AUDITOR' && role !== 'EXECUTIVE_VIEWER' && state !== 'restricted' && state !== 'denied';
+  const financial = writeable && !!role && ['OWNER', 'ADMIN', 'FINANCE_MANAGER', 'COVE_IMPLEMENTATION'].includes(role);
+  const commercial = writeable && !!role && ['OWNER', 'ADMIN', 'COMMERCIAL_MANAGER', 'QS', 'PROJECT_MANAGER', 'COVE_IMPLEMENTATION'].includes(role);
 
   const reset = async () => {
-    setProjects(structuredClone(projectsSeed));
-    setActions(structuredClone(actionsSeed));
-    setInvoices(structuredClone(invoicesSeed));
-    setDocuments(structuredClone(documentsSeed));
-    setTickets(structuredClone(ticketsSeed));
-    setFeatures(structuredClone(featuresSeed));
-    setRecoveryLeads(structuredClone(recoveryLeadsSeed));
+    setProjects([]);
+    setActions([]);
+    setInvoices([]);
+    setDocuments([]);
+    setTickets([]);
+    setFeatures([]);
+    setRecoveryLeads([]);
     setDrafts([]);
     setState('normal');
-    setNotice('Data aplikasi telah dikembalikan ke kondisi awal.');
+    setNotice('Data aplikasi disinkronkan kembali dari server.');
     await reloadData();
   };
 
@@ -279,7 +295,6 @@ function useWorkspaceStore() {
   return {
     journey,
     setJourney,
-    exitPreview,
     tracking,
     setTracking,
     consentOpen,
@@ -303,7 +318,6 @@ function useWorkspaceStore() {
     userName,
     userEmail,
     role,
-    setRole: setRoleState,
     state,
     setState,
     company,

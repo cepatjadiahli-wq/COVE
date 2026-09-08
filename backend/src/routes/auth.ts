@@ -7,15 +7,17 @@
 import {Hono} from 'hono';
 import {requireAuth} from '../middleware/auth.middleware.js';
 import {AuthService} from '../services/auth.service.js';
-import {db} from '../db/store.js';
+import {getIdentityRepository} from '../repositories/identity.repository.js';
 
 export const authRoute = new Hono();
 
 // GET /api/auth/me
 // Returns verified session actor, organization info, and role permissions.
-authRoute.get('/auth/me', requireAuth, (c) => {
+// No fake company fallback; resolves organization from canonical repository.
+authRoute.get('/auth/me', requireAuth, async (c) => {
   const actor = c.get('actor');
-  const org = db.organizations.find(o => o.id === actor.orgId);
+  const identityRepo = getIdentityRepository();
+  const org = actor.orgId ? await identityRepo.getOrganizationById(actor.orgId) : null;
 
   return c.json({
     success: true,
@@ -27,7 +29,7 @@ authRoute.get('/auth/me', requireAuth, (c) => {
         name: actor.fullName,
         email: actor.email,
         orgId: actor.orgId,
-        company: org?.legalName || 'PT Ruang Karya Konstruksi',
+        company: org ? (org.displayName || org.legalName) : '',
         role: actor.role,
         isPlatformAdmin: actor.isPlatformAdmin
       },

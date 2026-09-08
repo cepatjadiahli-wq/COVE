@@ -1,11 +1,12 @@
 // ============================================================================
-// COVE Backend — Request-Scoped Authentication & RBAC Middleware (Gate P0-A)
+// COVE Backend — Request-Scoped Authentication & RBAC Middleware (Gate P0-A.1)
 // Acuan: COVE_PRD_v2.0_Product_End_State.md §7, COVE_ERD_v2.0_Logical_Data_Model.md §3, §30
+// Replaces JSON store lookup with canonical PostgreSQL IdentityRepository.
 // ============================================================================
 
 import type {Context, Next} from 'hono';
 import {verifyToken} from '../lib/supabase.js';
-import {db} from '../db/store.js';
+import {getIdentityRepository} from '../repositories/identity.repository.js';
 import type {RequestActor, PlatformRoleScope} from '../types/domain.js';
 
 // Extend Hono Context type
@@ -18,6 +19,7 @@ declare module 'hono' {
 /**
  * Global/Route Middleware: Require Valid Authenticated Session
  * Resolves request-scoped actor from verified Supabase JWT Bearer token.
+ * Queries canonical PostgreSQL tables via IdentityRepository.
  * Never trusts client headers/body/query for identity or organization.
  */
 export async function requireAuth(c: Context, next: Next) {
@@ -47,9 +49,10 @@ export async function requireAuth(c: Context, next: Next) {
   }
 
   const authUserId = verification.user.id;
+  const identityRepo = getIdentityRepository();
 
-  // 1. Resolve Profile
-  const profile = db.profiles.find(p => p.authUserId === authUserId && p.status === 'ACTIVE');
+  // 1. Resolve Profile from PostgreSQL
+  const profile = await identityRepo.findProfileByAuthUserId(authUserId);
   if (!profile) {
     return c.json({
       success: false,
@@ -57,37 +60,65 @@ export async function requireAuth(c: Context, next: Next) {
     }, 403);
   }
 
-  // 2. Resolve Platform Admin Status & Grants (Strict Separation from Tenant Role)
-  const platformAdmin = db.platformAdmins.find(
-    pa => pa.authUserId === authUserId && pa.status === 'ACTIVE'
-  );
+  // 2. Resolve Platform Admin Status & Grants from PostgreSQL (Strict Separation)
+  const platformAdmin = await identityRepo.getPlatformAdminByAuthUserId(authUserId);
   const isPlatformAdmin = !!platformAdmin;
 
   let platformGrants: PlatformRoleScope[] = [];
   if (platformAdmin) {
-    platformGrants = db.platformRoleGrants
-      .filter(g => g.adminId === platformAdmin.id && !g.revokedAt)
-      .map(g => g.roleScope);
+    platformGrants = await identityRepo.getPlatformRoleGrants(platformAdmin.id);
   }
 
-  // 3. Resolve Active Organization Membership
-  const membership = db.organizationMemberships.find(
-    m => m.profileId === profile.id && m.status === 'ACTIVE'
-  );
-  if (!membership && !isPlatformAdmin) {
-    return c.json({
-      success: false,
-      error: 'Pengguna tidak memiliki keanggotaan aktif pada organisasi tenant.'
-    }, 403);
+  // 3. Resolve Active Organization Memberships from PostgreSQL (Deterministic Strategy)
+  const activeMemberships = await identityRepo.getActiveMembershipsByProfileId(profile.id);
+
+  let selectedMembership: (typeof activeMemberships)[0] | null = null;
+  if (activeMemberships.length === 0) {
+    if (!isPlatformAdmin) {
+      return c.json({
+        success: false,
+        error: 'Pengguna tidak memiliki keanggotaan aktif pada organisasi tenant.'
+      }, 403);
+    }
+    // Platform admin without tenant membership:
+    // role = null, orgId = null, membershipId = null, isPlatformAdmin = true
+    selectedMembership = null;
+  } else if (activeMemberships.length === 1) {
+    const requestedOrgId = c.req.header('x-organization-id');
+    if (requestedOrgId && requestedOrgId !== activeMemberships[0].orgId) {
+      return c.json({
+        success: false,
+        error: 'Akses ditolak: Pengguna bukan anggota aktif dari organisasi yang diminta.'
+      }, 403);
+    }
+    selectedMembership = activeMemberships[0];
+  } else {
+    // Multi-membership: >1 active memberships requires explicit valid tenant selection
+    const requestedOrgId = c.req.header('x-organization-id');
+    if (!requestedOrgId) {
+      return c.json({
+        success: false,
+        code: 'TENANT_SELECTION_REQUIRED',
+        error: 'Multi-organisasi terdeteksi. Silakan tentukan organisasi aktif melalui header x-organization-id.'
+      }, 400);
+    }
+    const match = activeMemberships.find(m => m.orgId === requestedOrgId);
+    if (!match) {
+      return c.json({
+        success: false,
+        error: 'Akses ditolak: Pengguna bukan anggota aktif dari organisasi yang diminta.'
+      }, 403);
+    }
+    selectedMembership = match;
   }
 
   // 4. Construct Request-Scoped Actor
   const actor: RequestActor = {
     authUserId,
     profileId: profile.id,
-    orgId: membership ? membership.orgId : '',
-    membershipId: membership ? membership.id : '',
-    role: membership ? membership.role : 'ADMIN',
+    orgId: selectedMembership ? selectedMembership.orgId : null,
+    membershipId: selectedMembership ? selectedMembership.id : null,
+    role: selectedMembership ? selectedMembership.role : null,
     fullName: profile.fullName,
     email: verification.user.email,
     isPlatformAdmin,
@@ -119,19 +150,17 @@ export async function requirePlatformAdmin(c: Context, next: Next) {
     }, 403);
   }
 
-  // Canonical Admin Audit Logging
+  // Canonical Admin Audit Logging to PostgreSQL admin_audit_logs
   try {
-    const adminRecord = db.platformAdmins.find(pa => pa.authUserId === actor.authUserId);
-    db.adminAuditLogs.push({
-      id: 'log-' + Date.now(),
+    const identityRepo = getIdentityRepository();
+    const adminRecord = await identityRepo.getPlatformAdminByAuthUserId(actor.authUserId);
+    await identityRepo.recordAdminAuditLog({
       actorAdminId: adminRecord?.id,
       action: `${c.req.method} ${c.req.path}`,
       resource: 'ADMIN_CONSOLE',
       requestSource: c.req.header('user-agent') || 'api',
-      correlationId: `req-${Date.now()}`,
-      createdAt: new Date().toISOString()
+      correlationId: `req-${Date.now()}`
     });
-    db.save();
   } catch (err) {
     console.warn('Admin audit log failed:', err);
   }

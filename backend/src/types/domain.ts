@@ -26,9 +26,9 @@ export type PlatformRoleScope =
 export interface RequestActor {
   authUserId: string;
   profileId: string;
-  orgId: string;
-  membershipId: string;
-  role: TenantRole;
+  orgId: string | null;
+  membershipId: string | null;
+  role: TenantRole | null;
   fullName: string;
   email: string;
   isPlatformAdmin: boolean;
@@ -50,7 +50,7 @@ export type StageValues = [number, number, number, number, number, number];
 
 export interface ProjectEntity {
   id: string;
-  orgId?: string;
+  orgId?: string | null;
   code: string;
   name: string;
   customer: string;
@@ -64,7 +64,7 @@ export interface ProjectEntity {
 
 export interface ActionEntity {
   id: string;
-  orgId?: string;
+  orgId?: string | null;
   projectId: string;
   title: string;
   blocker: string;
@@ -78,7 +78,7 @@ export interface ActionEntity {
 
 export interface InvoiceEntity {
   id: string;
-  orgId?: string;
+  orgId?: string | null;
   projectId: string;
   number: string;
   principal: number;
@@ -91,7 +91,7 @@ export interface InvoiceEntity {
 
 export interface DocumentRecord {
   id: string;
-  orgId?: string;
+  orgId?: string | null;
   projectId: string;
   name: string;
   kind: 'Opname' | 'Sertifikat' | 'Kontrak' | 'Klaim' | 'Lampiran';
@@ -103,7 +103,7 @@ export interface DocumentRecord {
 
 export interface SupportTicketEntity {
   id: string;
-  orgId?: string;
+  orgId?: string | null;
   title: string;
   category: string;
   status: string;

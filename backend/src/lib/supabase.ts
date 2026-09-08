@@ -41,6 +41,9 @@ type TestTokenVerifier = (token: string) => Promise<TokenVerificationResult>;
 let customTestVerifier: TestTokenVerifier | null = null;
 
 export function setTestTokenVerifier(verifier: TestTokenVerifier | null): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('CRITICAL SECURITY VIOLATION: Test token verifier can only be configured in test environment (NODE_ENV=test).');
+  }
   customTestVerifier = verifier;
 }
 
@@ -55,6 +58,9 @@ export async function verifyToken(token: string): Promise<TokenVerificationResul
 
   // If custom test verifier is registered (in test environment)
   if (customTestVerifier) {
+    if (process.env.NODE_ENV !== 'test') {
+      throw new Error('CRITICAL SECURITY VIOLATION: Custom test verifier invoked outside test environment.');
+    }
     return await customTestVerifier(token);
   }
 

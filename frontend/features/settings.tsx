@@ -318,7 +318,7 @@ export function ProfileView(){
                 <span style={{fontSize:12,fontWeight:700,color:'#00a6ff',display:'block',marginBottom:4}}>
                   PERAN RESMI PADA ORGANISASI:
                 </span>
-                <p style={{fontSize:14,color:'#fff',fontWeight:600}}>{s.role.replaceAll('_', ' ')}</p>
+                <p style={{fontSize:14,color:'#fff',fontWeight:600}}>{s.role ? s.role.replaceAll('_', ' ') : 'Belum ditetapkan'}</p>
                 <small style={{color:'#888',fontSize:12}}>Peran ditetapkan oleh Administrator Organisasi sesuai kebijakan kontrol akses sistem (RBAC).</small>
               </div>
             </div>

@@ -11,7 +11,7 @@ export function PublicHeader() {
   const [open, setOpen] = useState(false);
   const {path, go} = useRoute();
   const s = useStore();
-  return <>{s.journey.enabled && <div className="public-preview"><span>SESI PENDAFTARAN AKTIF · Selesaikan onboarding perusahaan untuk memulai workspace</span><button onClick={()=>{s.exitPreview();go('/');}}>Keluar sesi <X size={14}/></button></div>}
+  return <>{s.authStatus === 'authenticated' && !s.actor?.orgId && <div className="public-preview"><span>PENDAFTARAN PERUSAHAAN · Selesaikan onboarding perusahaan untuk memulai workspace</span><button onClick={()=>{s.logout();go('/');}}>Keluar <X size={14}/></button></div>}
     <a href="#main-content" className="skip-link">Lewati ke konten</a>
     <header className="public-header"><Link href="/" className="wordmark" aria-label="COVE — Beranda">COVE<span>●</span></Link>
       <nav aria-label="Navigasi publik" className={open?'public-nav is-open':'public-nav'}>
@@ -23,7 +23,7 @@ export function PublicHeader() {
 }
 export function PublicFooter() {
   const s=useStore(); const {path}=useRoute();
-  return <footer className="public-footer"><Link className="wordmark" href="/">COVE<span>●</span></Link><p>Construction Operations Value Engine<br/>Dari pekerjaan, menuju kas yang terlihat.</p><nav aria-label="Informasi COVE"><Link href="/bantuan">Bantuan</Link><Link href="/privasi">Privasi</Link><Link href="/ketentuan">Ketentuan</Link>{MARKETING_PATHS.includes(path)&&<button onClick={()=>s.setConsentOpen(true)}>Preferensi privasi</button>}</nav><Link href="/preview">Pratinjau frontend <ArrowUpRight size={14}/></Link></footer>;
+  return <footer className="public-footer"><Link className="wordmark" href="/">COVE<span>●</span></Link><p>Construction Operations Value Engine<br/>Dari pekerjaan, menuju kas yang terlihat.</p><nav aria-label="Informasi COVE"><Link href="/bantuan">Bantuan</Link><Link href="/privasi">Privasi</Link><Link href="/ketentuan">Ketentuan</Link>{MARKETING_PATHS.includes(path)&&<button onClick={()=>s.setConsentOpen(true)}>Preferensi privasi</button>}</nav></footer>;
 }
 export function ConsentBanner() {
   const s=useStore(); const {path}=useRoute();

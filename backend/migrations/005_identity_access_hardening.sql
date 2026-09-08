@@ -8,6 +8,29 @@
 -- 1. Tenant Role Model Alignment (PRD v2.2 §7)
 -- ============================================================================
 
+-- Validate existing data before constraint modification (PRD v2.2 / Section Q)
+DO $$
+DECLARE
+    invalid_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO invalid_count
+    FROM public.organization_memberships
+    WHERE role NOT IN (
+        'OWNER',
+        'ADMIN',
+        'COMMERCIAL_MANAGER',
+        'QS',
+        'PROJECT_MANAGER',
+        'FINANCE_MANAGER',
+        'EXECUTIVE_VIEWER',
+        'AUDITOR',
+        'COVE_IMPLEMENTATION'
+    );
+    IF invalid_count > 0 THEN
+        RAISE EXCEPTION 'MIGRATION HALTED: Found % invalid tenant roles in organization_memberships. Clean up or migrate explicitly before applying constraint.', invalid_count;
+    END IF;
+END $$;
+
 -- Drop old check constraint if exists
 ALTER TABLE organization_memberships 
 DROP CONSTRAINT IF EXISTS organization_memberships_role_check;
