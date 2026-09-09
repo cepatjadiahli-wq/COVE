@@ -1,5 +1,5 @@
 // ============================================================================
-// COVE Backend — Authentication & Current Session Endpoints (Gate P0-A)
+// COVE Backend — Authentication & Current Session Endpoints (Gate P0-A.3)
 // Acuan: COVE_PRD_v2.0_Product_End_State.md §7, SR-017
 // Removed prototype login and switch-role. All identity flows via Supabase Auth.
 // ============================================================================
@@ -13,16 +13,36 @@ export const authRoute = new Hono();
 
 // GET /api/auth/me
 // Returns verified session actor, organization info, and role permissions.
-// No fake company fallback; resolves organization from canonical repository.
+// If user belongs to multiple organizations and no x-organization-id is sent,
+// returns tenantSelectionRequired: true with tenantOptions without blocking authentication.
 authRoute.get('/auth/me', requireAuth, async (c) => {
   const actor = c.get('actor');
   const identityRepo = getIdentityRepository();
   const org = actor.orgId ? await identityRepo.getOrganizationById(actor.orgId) : null;
 
+  // Resolve all active memberships for this profile to support multi-tenant switching
+  const memberships = await identityRepo.getActiveMembershipsByProfileId(actor.profileId);
+  const tenantOptions = await Promise.all(
+    memberships.map(async (m) => {
+      const o = await identityRepo.getOrganizationById(m.orgId);
+      return {
+        orgId: m.orgId,
+        membershipId: m.id,
+        role: m.role,
+        legalName: o?.legalName || m.orgId,
+        displayName: o?.displayName || o?.legalName || m.orgId
+      };
+    })
+  );
+
+  const tenantSelectionRequired = memberships.length > 1 && !actor.orgId;
+
   return c.json({
     success: true,
     data: {
       actor,
+      tenantSelectionRequired,
+      tenantOptions,
       user: {
         id: actor.profileId,
         authUserId: actor.authUserId,
@@ -41,6 +61,33 @@ authRoute.get('/auth/me', requireAuth, async (c) => {
         canManageBilling: AuthService.canManageBilling(actor.role),
         canManageUsers: AuthService.canManageUsers(actor.role)
       }
+    }
+  });
+});
+
+// GET /api/auth/tenant-options
+authRoute.get('/auth/tenant-options', requireAuth, async (c) => {
+  const actor = c.get('actor');
+  const identityRepo = getIdentityRepository();
+  const memberships = await identityRepo.getActiveMembershipsByProfileId(actor.profileId);
+  const options = await Promise.all(
+    memberships.map(async (m) => {
+      const o = await identityRepo.getOrganizationById(m.orgId);
+      return {
+        orgId: m.orgId,
+        membershipId: m.id,
+        role: m.role,
+        legalName: o?.legalName || m.orgId,
+        displayName: o?.displayName || o?.legalName || m.orgId
+      };
+    })
+  );
+
+  return c.json({
+    success: true,
+    data: {
+      currentOrgId: actor.orgId,
+      options
     }
   });
 });
@@ -83,6 +130,47 @@ authRoute.post('/organizations', requireAuth, async (c) => {
     return c.json({
       success: false,
       error: err.message || 'Gagal membuat organisasi di basis data.'
+    }, 500);
+  }
+});
+
+// PATCH /api/organizations/:id
+// Updates organization profile (legalName, displayName, etc.)
+// Enforces that actor belongs to this organization with OWNER or ADMIN role.
+authRoute.patch('/organizations/:id', requireAuth, async (c) => {
+  const actor = c.get('actor');
+  const orgId = c.req.param('id');
+
+  if (!actor.orgId || actor.orgId !== orgId) {
+    return c.json({
+      success: false,
+      error: 'Akses ditolak: Anda tidak memiliki wewenang pada organisasi ini.'
+    }, 403);
+  }
+
+  if (actor.role !== 'OWNER' && actor.role !== 'ADMIN') {
+    return c.json({
+      success: false,
+      error: 'Hanya OWNER atau ADMIN yang berwenang mengubah informasi perusahaan.'
+    }, 403);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const identityRepo = getIdentityRepository();
+  try {
+    const updated = await identityRepo.updateOrganization(orgId, {
+      legalName: body.legalName?.trim(),
+      displayName: body.displayName?.trim()
+    });
+
+    return c.json({
+      success: true,
+      data: updated
+    });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: err.message || 'Gagal memperbarui data organisasi.'
     }, 500);
   }
 });

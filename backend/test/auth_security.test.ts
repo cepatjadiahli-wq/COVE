@@ -11,7 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import {fileURLToPath} from 'url';
 import app from '../src/index.js';
-import {db} from '../src/db/store.js';
+import {db, DataStore} from '../src/db/store.js';
 import {setTestTokenVerifier} from '../src/lib/supabase.js';
 import {config} from '../src/config.js';
 import {
@@ -113,6 +113,12 @@ before(() => {
     }
     if (token === 'token-onboarding') {
       return {user: {id: 'usr-auth-onboarding', email: 'pendiri@baru.co.id'}, error: null};
+    }
+    if (token === 'token-fresh-bootstrap') {
+      return {user: {id: 'usr-auth-fresh-99', email: 'fresh@cove.id', user_metadata: {full_name: 'Fresh User'}}, error: null};
+    }
+    if (token === 'token-no-org') {
+      return {user: {id: 'usr-auth-no-org-101', email: 'noorg@cove.id', user_metadata: {full_name: 'No Org User'}}, error: null};
     }
     return {user: null, error: 'Token otentikasi tidak valid atau sudah kedaluwarsa.'};
   });
@@ -808,6 +814,8 @@ test('AUTH-30: Clean PostgreSQL migration SQL chain executes successfully', asyn
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       email TEXT UNIQUE,
       encrypted_password TEXT,
+      raw_user_meta_data JSONB DEFAULT '{}'::jsonb,
+      phone TEXT,
       email_confirmed_at TIMESTAMPTZ DEFAULT NOW(),
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -963,4 +971,525 @@ test('AUTH-35: Platform role scopes in TypeScript and SQL constraint are aligned
     '004 check constraint must strictly match PlatformRoleScope definition'
   );
 });
+
+// ============================================================================
+// GATE P0-A.3 TENANT AUTHORITY & ENTITLEMENT CLOSURE TESTS (AUTH-36 to AUTH-55)
+// ============================================================================
+
+test('AUTH-36: Strict isolation on projects — fail-closed without actor.orgId, Tenant A cannot access Tenant B, and no (!p.orgId) in routes', async () => {
+  // 1. Source code check: ensure (!p.orgId) pattern is eliminated
+  const projectsRouteCode = fs.readFileSync(path.resolve(__dirname, '../src/routes/projects.ts'), 'utf-8');
+  assert.strictEqual(projectsRouteCode.includes('!p.orgId'), false, 'routes/projects.ts must not contain !p.orgId pattern');
+
+  // 2. Multi-org user without x-organization-id header returns 400 TENANT_SELECTION_REQUIRED
+  // (token-multi has 2 memberships: org-001 and org-002)
+  const resNoOrg = await app.request('/api/projects', {
+    headers: { Authorization: 'Bearer token-multi' }
+  });
+  assert.strictEqual(resNoOrg.status, 400);
+  const bodyNoOrg = await resNoOrg.json();
+  assert.strictEqual(bodyNoOrg.code, 'TENANT_SELECTION_REQUIRED');
+
+  // 3. Cross-tenant isolation
+  const resOwner = await app.request('/api/projects', {
+    headers: { Authorization: 'Bearer token-owner' }
+  });
+  assert.strictEqual(resOwner.status, 200);
+  const bodyOwner = await resOwner.json();
+  const codes = bodyOwner.data.map((p: any) => p.code);
+  assert.ok(codes.includes('COV-001'));
+  assert.strictEqual(codes.includes('EXT-001'), false, 'Org A must not see Org B projects');
+
+  // 4. Cross-tenant detail access returns 404
+  const resDetail = await app.request('/api/projects/p-org2-01', {
+    headers: { Authorization: 'Bearer token-owner' }
+  });
+  assert.strictEqual(resDetail.status, 404);
+});
+
+test('AUTH-37: Strict isolation on actions — actions list filtered by actor.orgId, cross-tenant action create returns 404', async () => {
+  const actionsRouteCode = fs.readFileSync(path.resolve(__dirname, '../src/routes/actions.ts'), 'utf-8');
+  assert.strictEqual(actionsRouteCode.includes('!a.orgId'), false, 'routes/actions.ts must not contain !a.orgId pattern');
+
+  // Cross-tenant action creation rejected
+  const resCrossCreate = await app.request('/api/actions', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      projectId: 'p-org2-01',
+      title: 'Tindakan Ilegal Lintas Tenant',
+      blocker: 'Blocker'
+    })
+  });
+  assert.strictEqual(resCrossCreate.status, 404, 'Must return 404 for project not found in current org');
+});
+
+test('AUTH-38: Strict isolation on invoices — invoices list filtered by actor.orgId, cross-tenant invoice / receipt returns 404', async () => {
+  const invoicesRouteCode = fs.readFileSync(path.resolve(__dirname, '../src/routes/invoices.ts'), 'utf-8');
+  assert.strictEqual(invoicesRouteCode.includes('!i.orgId'), false, 'routes/invoices.ts must not contain !i.orgId pattern');
+
+  // Cross-tenant invoice creation rejected
+  const resCrossInvoice = await app.request('/api/invoices', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-finance',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      projectId: 'p-org2-01',
+      number: 'INV/HACK/001',
+      principal: 1000000,
+      certificate: 'BAP-001'
+    })
+  });
+  assert.strictEqual(resCrossInvoice.status, 404);
+
+  // Cross-tenant cash receipt rejected
+  const resCrossReceipt = await app.request('/api/invoices/receipts', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-finance',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      projectId: 'p-org2-01',
+      amount: 1000000,
+      bankReference: 'REF-001',
+      allocations: []
+    })
+  });
+  assert.strictEqual(resCrossReceipt.status, 404);
+});
+
+test('AUTH-39: Strict isolation on ledger — cross-tenant ledger read and entry return 404', async () => {
+  const ledgerRouteCode = fs.readFileSync(path.resolve(__dirname, '../src/routes/ledger.ts'), 'utf-8');
+  assert.strictEqual(ledgerRouteCode.includes('!p.orgId'), false, 'routes/ledger.ts must not contain !p.orgId pattern');
+
+  // Cross-tenant ledger view
+  const resLedger = await app.request('/api/projects/p-org2-01/ledger', {
+    headers: { Authorization: 'Bearer token-owner' }
+  });
+  assert.strictEqual(resLedger.status, 404);
+
+  // Cross-tenant ledger entry
+  const resEntry = await app.request('/api/projects/p-org2-01/ledger/entry', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-qs',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      stageIndex: 0,
+      amount: 1000000,
+      reason: 'Cross-tenant'
+    })
+  });
+  assert.strictEqual(resEntry.status, 404);
+});
+
+test('AUTH-40: Strict isolation on reports — aggregates only actor.orgId data', async () => {
+  const reportsRouteCode = fs.readFileSync(path.resolve(__dirname, '../src/routes/reports.ts'), 'utf-8');
+  assert.strictEqual(reportsRouteCode.includes('!p.orgId'), false, 'routes/reports.ts must not contain !p.orgId pattern');
+  assert.strictEqual(reportsRouteCode.includes('!i.orgId'), false, 'routes/reports.ts must not contain !i.orgId pattern');
+
+  const resPortfolio = await app.request('/api/reports/portfolio', {
+    headers: { Authorization: 'Bearer token-owner' }
+  });
+  assert.strictEqual(resPortfolio.status, 200);
+  const bodyPortfolio = await resPortfolio.json();
+  const crossCodes = bodyPortfolio.data.projects.map((p: any) => p.code);
+  assert.strictEqual(crossCodes.includes('EXT-001'), false);
+});
+
+test('AUTH-41: Support tickets strict isolation — scoped by orgId and stamps orgId', async () => {
+  // Create ticket as Org 1
+  const resCreate = await app.request('/api/support/tickets', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      title: 'Tiket Tenant A',
+      body: 'Keluhan Tenant A'
+    })
+  });
+  assert.strictEqual(resCreate.status, 201);
+  const bodyCreate = await resCreate.json();
+  assert.strictEqual(bodyCreate.data.orgId, 'org-001');
+
+  // Tenant B cannot see this ticket
+  const resTenantB = await app.request('/api/support/tickets', {
+    headers: { Authorization: 'Bearer token-tenant-b' }
+  });
+  assert.strictEqual(resTenantB.status, 200);
+  const bodyTenantB = await resTenantB.json();
+  const ticketIds = bodyTenantB.data.map((t: any) => t.id);
+  assert.strictEqual(ticketIds.includes(bodyCreate.data.id), false);
+});
+
+test('AUTH-42: Support message author spoofing prevention — client author rejected, derived from actor.fullName', async () => {
+  // 1. Create a ticket in org-001
+  const resTicket = await app.request('/api/support/tickets', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      title: 'Tiket Spoofing Check',
+      body: 'Isi'
+    })
+  });
+  const bodyTicket = await resTicket.json();
+  const ticketId = bodyTicket.data.id;
+
+  // 2. Add message with spoofed author
+  const resMsg = await app.request(`/api/support/tickets/${ticketId}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      body: 'Pesan dari user',
+      author: 'Fake SuperAdmin Hacker'
+    })
+  });
+  assert.strictEqual(resMsg.status, 200);
+  const bodyMsg = await resMsg.json();
+  const lastMsg = bodyMsg.data.messages[bodyMsg.data.messages.length - 1];
+  assert.strictEqual(lastMsg.author, 'Andi Pratama', 'Author MUST be derived from verified actor, NOT client input');
+});
+
+test('AUTH-43: Support message internal flag restriction — non-admin forced to false', async () => {
+  // 1. Create a ticket in org-001
+  const resTicket = await app.request('/api/support/tickets', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      title: 'Tiket Internal Check',
+      body: 'Isi'
+    })
+  });
+  const bodyTicket = await resTicket.json();
+  const ticketId = bodyTicket.data.id;
+
+  // 2. Tenant OWNER tries to set internal = true
+  const resOwnerMsg = await app.request(`/api/support/tickets/${ticketId}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      body: 'Catatan rahasia',
+      internal: true
+    })
+  });
+  assert.strictEqual(resOwnerMsg.status, 200);
+  const bodyOwnerMsg = await resOwnerMsg.json();
+  const lastMsg = bodyOwnerMsg.data.messages[bodyOwnerMsg.data.messages.length - 1];
+  assert.strictEqual(lastMsg.internal, false, 'Non-admin actor CANNOT set internal to true');
+});
+
+test('AUTH-44: Feature requests scoped by tenant org', async () => {
+  const resCreate = await app.request('/api/support/features', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      title: 'Usulan Fitur Tenant A',
+      problem: 'Masalah Tenant A'
+    })
+  });
+  assert.strictEqual(resCreate.status, 201);
+  const bodyCreate = await resCreate.json();
+  assert.strictEqual(bodyCreate.data.orgId, 'org-001');
+
+  // Org B reading features cannot see Org 1 features
+  const resOrgB = await app.request('/api/support/features', {
+    headers: { Authorization: 'Bearer token-tenant-b' }
+  });
+  assert.strictEqual(resOrgB.status, 200);
+  const bodyOrgB = await resOrgB.json();
+  const ids = bodyOrgB.data.map((f: any) => f.id);
+  assert.strictEqual(ids.includes(bodyCreate.data.id), false);
+});
+
+test('AUTH-45: SaaS Subscription isolated per tenant — settlement updates exact tenant', async () => {
+  // Ensure subscriptions are seeded as INACTIVE
+  await testRepo.upsertSubscription('org-001', { planId: 'core', status: 'INACTIVE' });
+  await testRepo.upsertSubscription('org-002', { planId: 'core', status: 'INACTIVE' });
+
+  // Register checkout session for org-001
+  const checkoutRef = `chk_settle_t1_${Date.now()}`;
+  await testRepo.createCheckoutSession({
+    id: `cs-${Date.now()}`,
+    organizationId: 'org-001',
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR'
+  });
+
+  // Settle checkoutRef via webhook
+  const resWebhook = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: JSON.stringify({
+      event: 'payment.settled',
+      id: `evt_settle_${Date.now()}`,
+      data: {
+        id: checkoutRef,
+        amount: 4900000,
+        status: 'settled'
+      }
+    })
+  });
+  assert.strictEqual(resWebhook.status, 200);
+  const bodyWebhook = await resWebhook.json();
+  assert.strictEqual(bodyWebhook.result, 'PROCESSED');
+
+  // Check Org 1 subscription -> ACTIVE
+  const subOrg1 = await testRepo.getSubscriptionByOrgId('org-001');
+  assert.strictEqual(subOrg1?.status, 'ACTIVE');
+
+  // Check Org 2 subscription -> remains INACTIVE
+  const subOrg2 = await testRepo.getSubscriptionByOrgId('org-002');
+  assert.strictEqual(subOrg2?.status, 'INACTIVE');
+});
+
+test('AUTH-46: Mayar settlement requires matching checkout session — unmatched ignored', async () => {
+  const unmappedRef = `unmapped_ref_${Date.now()}`;
+  const resWebhook = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: JSON.stringify({
+      event: 'payment.settled',
+      id: `evt_unmapped_${Date.now()}`,
+      data: {
+        id: unmappedRef,
+        amount: 4900000,
+        status: 'settled'
+      }
+    })
+  });
+  assert.strictEqual(resWebhook.status, 200);
+  const bodyWebhook = await resWebhook.json();
+  assert.strictEqual(bodyWebhook.result, 'IGNORED', 'Unmatched checkout ref must return IGNORED without activating any tenant');
+});
+
+test('AUTH-47: Database bootstrap trigger creates profile automatically on auth.users insert', async () => {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const pglite = new PGlite();
+
+  await pglite.exec(`
+    CREATE SCHEMA IF NOT EXISTS auth;
+    CREATE TABLE IF NOT EXISTS auth.users (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT UNIQUE,
+      encrypted_password TEXT,
+      raw_user_meta_data JSONB DEFAULT '{}'::jsonb,
+      phone TEXT,
+      email_confirmed_at TIMESTAMPTZ DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE OR REPLACE FUNCTION auth.uid() RETURNS UUID AS $$
+    BEGIN
+      RETURN '00000000-0000-0000-0000-000000000001'::UUID;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+  `);
+
+  // Create stub roles required by Supabase-targeting migrations (002, 005)
+  await pglite.exec(`
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        CREATE ROLE authenticated;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        CREATE ROLE anon;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+        CREATE ROLE service_role;
+      END IF;
+    END $$;
+  `);
+
+  const migrationsDir = path.resolve(__dirname, '../migrations');
+  for (const filename of CANONICAL_MIGRATION_ORDER) {
+    const filePath = path.join(migrationsDir, filename);
+    const sql = fs.readFileSync(filePath, 'utf-8');
+    await pglite.exec(sql);
+  }
+
+  // Insert fresh user into auth.users
+  const freshUserId = '11111111-2222-3333-4444-555555555555';
+  await pglite.exec(`
+    INSERT INTO auth.users (id, email, raw_user_meta_data)
+    VALUES ('${freshUserId}'::uuid, 'trigger_auto@cove.id', '{"full_name":"Trigger Auto User"}'::jsonb);
+  `);
+
+  // Verify profile exists in public.profiles
+  const profileRes = await pglite.query<{ full_name: string; status: string }>(
+    `SELECT full_name, status FROM public.profiles WHERE auth_user_id = '${freshUserId}'::uuid`
+  );
+  assert.strictEqual(profileRes.rows.length, 1, 'Profile must be automatically bootstrapped by trigger');
+  assert.strictEqual(profileRes.rows[0].full_name, 'Trigger Auto User');
+  assert.strictEqual(profileRes.rows[0].status, 'ACTIVE');
+
+  await pglite.close();
+});
+
+test('AUTH-48: Application profile bootstrap allows fresh user to authenticate without 403', async () => {
+  const res = await app.request('/api/auth/me', {
+    headers: { Authorization: 'Bearer token-fresh-bootstrap' }
+  });
+  assert.strictEqual(res.status, 200, 'Fresh user must authenticate without 403');
+  const body = await res.json();
+  assert.strictEqual(body.success, true);
+  assert.strictEqual(body.data.actor.fullName, 'Fresh User');
+  assert.strictEqual(body.data.actor.email, 'fresh@cove.id');
+});
+
+test('AUTH-49: Authenticated user without organization does not get 400 or 403 on onboarding/me routes', async () => {
+  const resMe = await app.request('/api/auth/me', {
+    headers: { Authorization: 'Bearer token-no-org' }
+  });
+  assert.strictEqual(resMe.status, 200);
+  const bodyMe = await resMe.json();
+  assert.strictEqual(bodyMe.data.actor.orgId, null);
+  assert.strictEqual(bodyMe.data.actor.role, null);
+  assert.strictEqual(bodyMe.data.tenantSelectionRequired, false);
+
+  const resTenantOptions = await app.request('/api/auth/tenant-options', {
+    headers: { Authorization: 'Bearer token-no-org' }
+  });
+  assert.strictEqual(resTenantOptions.status, 200);
+  const bodyOptions = await resTenantOptions.json();
+  assert.strictEqual(bodyOptions.data.options.length, 0);
+});
+
+test('AUTH-50: Organization creation creates active membership with role OWNER for creator', async () => {
+  const resCreate = await app.request('/api/organizations', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer token-fresh-bootstrap',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      legalName: 'PT Nusantara Baru Jaya',
+      displayName: 'Nusantara Baru'
+    })
+  });
+  assert.strictEqual(resCreate.status, 201);
+  const bodyCreate = await resCreate.json();
+  assert.strictEqual(bodyCreate.data.membership.role, 'OWNER');
+  assert.strictEqual(bodyCreate.data.membership.status, 'ACTIVE');
+});
+
+test('AUTH-51: Multi-membership user on /api/auth/me without header returns tenantSelectionRequired', async () => {
+  const res = await app.request('/api/auth/me', {
+    headers: { Authorization: 'Bearer token-multi' }
+  });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.data.tenantSelectionRequired, true);
+  assert.strictEqual(body.data.tenantOptions.length, 2);
+  assert.strictEqual(body.data.actor.orgId, null);
+});
+
+test('AUTH-52: Multi-membership user with valid x-organization-id returns specific tenant context', async () => {
+  const res = await app.request('/api/auth/me', {
+    headers: {
+      Authorization: 'Bearer token-multi',
+      'x-organization-id': 'org-002'
+    }
+  });
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.data.tenantSelectionRequired, false);
+  assert.strictEqual(body.data.actor.orgId, 'org-002');
+  assert.strictEqual(body.data.actor.role, 'COMMERCIAL_MANAGER');
+});
+
+test('AUTH-53: Multi-membership user with invalid x-organization-id returns 403 Forbidden', async () => {
+  const res = await app.request('/api/auth/me', {
+    headers: {
+      Authorization: 'Bearer token-multi',
+      'x-organization-id': 'org-unauthorized-999'
+    }
+  });
+  assert.strictEqual(res.status, 403);
+});
+
+test('AUTH-54: Organization update (PATCH /api/organizations/:id) requires OWNER or ADMIN role', async () => {
+  // 1. Allowed for OWNER
+  const resOwner = await app.request('/api/organizations/org-001', {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer token-owner',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ legalName: 'PT Ruang Karya Sukses' })
+  });
+  assert.strictEqual(resOwner.status, 200);
+
+  // 2. Denied for QS (role QS has no organization update permission)
+  const resQS = await app.request('/api/organizations/org-001', {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer token-qs',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ legalName: 'PT Ruang Karya Hacked' })
+  });
+  assert.strictEqual(resQS.status, 403);
+
+  // 3. Denied for Tenant B trying to update Org 1
+  const resCross = await app.request('/api/organizations/org-001', {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer token-tenant-b',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ legalName: 'PT Ruang Karya Hijacked' })
+  });
+  assert.strictEqual(resCross.status, 403);
+});
+
+test('AUTH-55: Production DataStore initialization starts empty without demo data', () => {
+  const savedEnv = process.env.NODE_ENV;
+  try {
+    process.env.NODE_ENV = 'production';
+    const store = new DataStore();
+    assert.strictEqual(store.projects.length, 0, 'Production store projects must be empty');
+    assert.strictEqual(store.actions.length, 0, 'Production store actions must be empty');
+    assert.strictEqual(store.invoices.length, 0, 'Production store invoices must be empty');
+    assert.strictEqual(store.tickets.length, 0, 'Production store tickets must be empty');
+    assert.strictEqual(store.features.length, 0, 'Production store features must be empty');
+    assert.strictEqual(store.subscription.status, 'INACTIVE', 'Production store subscription must be INACTIVE');
+  } finally {
+    process.env.NODE_ENV = savedEnv;
+  }
+});
+
 

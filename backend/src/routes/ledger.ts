@@ -1,6 +1,6 @@
 // ============================================================================
-// COVE Backend — Commercial Ledger API Routes (Gate P0-A)
-// Enforces request-scoped actor, tenant org isolation, and pure RBAC checks.
+// COVE Backend — Commercial Ledger API Routes (Gate P0-A.3)
+// Enforces request-scoped actor, fail-closed tenant org isolation, and RBAC checks.
 // ============================================================================
 
 import {Hono} from 'hono';
@@ -16,8 +16,11 @@ ledgerRoute.use('/projects/*', requireAuth);
 // GET /api/projects/:id/ledger
 ledgerRoute.get('/projects/:id/ledger', (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   const id = c.req.param('id');
-  const project = db.projects.find(p => p.id === id && (!p.orgId || p.orgId === actor.orgId));
+  const project = db.projects.find(p => p.id === id && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }
@@ -39,12 +42,15 @@ ledgerRoute.get('/projects/:id/ledger', (c) => {
 // POST /api/projects/:id/ledger/entry
 ledgerRoute.post('/projects/:id/ledger/entry', async (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   if (!AuthService.canManageCommercial(actor.role)) {
     return c.json({success: false, error: 'Hanya QS / PM / Owner yang berwenang mencatat progres.'}, 403);
   }
 
   const id = c.req.param('id');
-  const project = db.projects.find(p => p.id === id && (!p.orgId || p.orgId === actor.orgId));
+  const project = db.projects.find(p => p.id === id && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }

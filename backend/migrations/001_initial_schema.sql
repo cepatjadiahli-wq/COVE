@@ -4,14 +4,14 @@
 -- Target Engine: PostgreSQL 15+ / Supabase
 -- ============================================================================
 
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- gen_random_uuid() is built-in to PostgreSQL 13+ / Supabase. No extension required.
 
 -- ============================================================================
 -- 1. Identity, Tenant & Project Access
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS organizations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     legal_name TEXT NOT NULL,
     display_name TEXT NOT NULL,
     timezone TEXT NOT NULL DEFAULT 'Asia/Jakarta',
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS organizations (
 );
 
 CREATE TABLE IF NOT EXISTS profiles (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     auth_user_id UUID UNIQUE NOT NULL,
     full_name TEXT NOT NULL,
     phone TEXT,
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS profiles (
 );
 
 CREATE TABLE IF NOT EXISTS organization_memberships (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     profile_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('OWNER', 'QS', 'FINANCE_MANAGER', 'PROJECT_MANAGER', 'AUDITOR')),
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS organization_memberships (
 );
 
 CREATE TABLE IF NOT EXISTS projects (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     project_code TEXT NOT NULL,
     project_name TEXT NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE TABLE IF NOT EXISTS project_memberships (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     org_membership_id UUID NOT NULL REFERENCES organization_memberships(id) ON DELETE CASCADE,
     project_role TEXT NOT NULL DEFAULT 'MEMBER',
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS project_memberships (
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS contracts (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     contract_number TEXT NOT NULL,
     currency TEXT NOT NULL DEFAULT 'IDR',
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS contracts (
 );
 
 CREATE TABLE IF NOT EXISTS contract_revisions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     contract_id UUID NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
     version_number INT NOT NULL DEFAULT 1,
     contract_value NUMERIC(18, 2) NOT NULL CHECK (contract_value >= 0),
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS contract_revisions (
 );
 
 CREATE TABLE IF NOT EXISTS contract_terms (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     revision_id UUID UNIQUE NOT NULL REFERENCES contract_revisions(id) ON DELETE CASCADE,
     payment_days INT NOT NULL DEFAULT 30,
     claim_cutoff_day INT NOT NULL DEFAULT 25,
@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS contract_terms (
 );
 
 CREATE TABLE IF NOT EXISTS variation_orders (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     contract_id UUID NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
     vo_number TEXT NOT NULL,
     description TEXT NOT NULL,
@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS variation_orders (
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS progress_periods (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     period_start DATE NOT NULL,
     period_end DATE NOT NULL,
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS progress_periods (
 
 -- Stage 1: Work Performed
 CREATE TABLE IF NOT EXISTS work_progress_lines (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     period_id UUID NOT NULL REFERENCES progress_periods(id) ON DELETE CASCADE,
     description TEXT NOT NULL,
     quantity NUMERIC(14, 4) NOT NULL DEFAULT 1,
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS work_progress_lines (
 
 -- Stage 2: Measurements (Diukur / Opname)
 CREATE TABLE IF NOT EXISTS measurements (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     measurement_number TEXT NOT NULL,
     measurement_date DATE NOT NULL,
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS measurements (
 );
 
 CREATE TABLE IF NOT EXISTS measurement_allocations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     work_progress_line_id UUID NOT NULL REFERENCES work_progress_lines(id) ON DELETE CASCADE,
     measurement_id UUID NOT NULL REFERENCES measurements(id) ON DELETE CASCADE,
     allocated_amount NUMERIC(18, 2) NOT NULL CHECK (allocated_amount >= 0)
@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS measurement_allocations (
 
 -- Stage 3: Claims (Diajukan)
 CREATE TABLE IF NOT EXISTS claims (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     claim_number TEXT NOT NULL,
     submitted_at DATE NOT NULL,
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS claims (
 );
 
 CREATE TABLE IF NOT EXISTS claim_allocations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     measurement_id UUID NOT NULL REFERENCES measurements(id) ON DELETE CASCADE,
     claim_id UUID NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
     allocated_amount NUMERIC(18, 2) NOT NULL CHECK (allocated_amount >= 0)
@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS claim_allocations (
 
 -- Stage 4: Certificates (Disetujui / BAP Sertifikat Termin)
 CREATE TABLE IF NOT EXISTS certificates (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     certificate_number TEXT NOT NULL,
     certified_at DATE NOT NULL,
@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS certificates (
 );
 
 CREATE TABLE IF NOT EXISTS certification_allocations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     claim_id UUID NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
     certificate_id UUID NOT NULL REFERENCES certificates(id) ON DELETE CASCADE,
     allocated_amount NUMERIC(18, 2) NOT NULL CHECK (allocated_amount >= 0)
@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS certification_allocations (
 
 -- Stage 5: Project Invoices (Ditagihkan)
 CREATE TABLE IF NOT EXISTS project_invoices (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     invoice_number TEXT NOT NULL,
     certificate_reference TEXT NOT NULL,
@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS project_invoices (
 );
 
 CREATE TABLE IF NOT EXISTS project_invoice_allocations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     certificate_id UUID NOT NULL REFERENCES certificates(id) ON DELETE CASCADE,
     project_invoice_id UUID NOT NULL REFERENCES project_invoices(id) ON DELETE CASCADE,
     allocated_principal NUMERIC(18, 2) NOT NULL CHECK (allocated_principal > 0)
@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS project_invoice_allocations (
 
 -- Stage 6: Cash Receipts & Allocations (Diterima / Kas Masuk Bank)
 CREATE TABLE IF NOT EXISTS cash_receipts (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     received_at DATE NOT NULL,
     bank_reference TEXT NOT NULL,
@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS cash_receipts (
 );
 
 CREATE TABLE IF NOT EXISTS receipt_allocations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     cash_receipt_id UUID NOT NULL REFERENCES cash_receipts(id) ON DELETE CASCADE,
     project_invoice_id UUID NOT NULL REFERENCES project_invoices(id) ON DELETE CASCADE,
     principal_allocated NUMERIC(18, 2) NOT NULL CHECK (principal_allocated >= 0),
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS receipt_allocations (
 );
 
 CREATE TABLE IF NOT EXISTS collection_promises (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     project_invoice_id UUID NOT NULL REFERENCES project_invoices(id) ON DELETE CASCADE,
     promised_date DATE NOT NULL,
@@ -247,7 +247,7 @@ CREATE TABLE IF NOT EXISTS collection_promises (
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS action_items (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     owner_name TEXT NOT NULL,
@@ -262,7 +262,7 @@ CREATE TABLE IF NOT EXISTS action_items (
 );
 
 CREATE TABLE IF NOT EXISTS action_notes (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     action_item_id UUID NOT NULL REFERENCES action_items(id) ON DELETE CASCADE,
     author_name TEXT NOT NULL,
     note TEXT NOT NULL,
@@ -270,7 +270,7 @@ CREATE TABLE IF NOT EXISTS action_notes (
 );
 
 CREATE TABLE IF NOT EXISTS documents (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('Opname', 'Sertifikat', 'Kontrak', 'Klaim', 'Lampiran')),
@@ -281,7 +281,7 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE TABLE IF NOT EXISTS import_batches (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
     file_hash TEXT NOT NULL,
@@ -306,7 +306,7 @@ CREATE TABLE IF NOT EXISTS plans (
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     plan_id TEXT NOT NULL REFERENCES plans(id),
     status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAST_DUE', 'CANCELLED', 'EXPIRED')),
@@ -316,7 +316,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 );
 
 CREATE TABLE IF NOT EXISTS billing_invoices (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     subscription_id UUID NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
     invoice_number TEXT UNIQUE NOT NULL,
@@ -327,7 +327,7 @@ CREATE TABLE IF NOT EXISTS billing_invoices (
 );
 
 CREATE TABLE IF NOT EXISTS webhook_events (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id TEXT UNIQUE NOT NULL,
     provider TEXT NOT NULL DEFAULT 'MAYAR',
     event_type TEXT NOT NULL,
@@ -350,7 +350,7 @@ CREATE TABLE IF NOT EXISTS support_tickets (
 );
 
 CREATE TABLE IF NOT EXISTS ticket_messages (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     ticket_id TEXT NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
     author TEXT NOT NULL,
     body TEXT NOT NULL,
@@ -374,7 +374,7 @@ CREATE TABLE IF NOT EXISTS feature_requests (
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS stage_snapshots (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     as_of_date DATE NOT NULL,
     work_value NUMERIC(18, 2) NOT NULL,
@@ -387,7 +387,7 @@ CREATE TABLE IF NOT EXISTS stage_snapshots (
 );
 
 CREATE TABLE IF NOT EXISTS leakage_snapshots (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     stage_snapshot_id UUID UNIQUE NOT NULL REFERENCES stage_snapshots(id) ON DELETE CASCADE,
     g1_unmeasured NUMERIC(18, 2) NOT NULL,
     g2_unclaimed NUMERIC(18, 2) NOT NULL,

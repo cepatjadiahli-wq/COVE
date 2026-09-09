@@ -1,4 +1,4 @@
-import {useState,type FormEvent} from 'react';
+import {useState,type FormEvent,useEffect} from 'react';
 import {
   CreditCard,Building2,Users,User,LifeBuoy,Plus,Download,ArrowUpRight,
   Check,ShieldCheck,CheckCircle2,Clock3,Send,Lightbulb,MessageSquare,FileText
@@ -7,22 +7,54 @@ import {useRoute,Link} from '@/lib/router';
 import {useStore,type PreviewRole} from '@/lib/store';
 import {money,dateLabel,type Ticket} from '@/lib/domain';
 import {PageHeading,Panel,Btn,Field,Choice,Check as CheckBox,Notice,Modal,DataTable,Badge,StateBoundary} from '@/components/cove/ui';
+import {api} from '@/lib/api';
 
 export function BillingView(){
   const s=useStore();
   const {go}=useRoute();
   const [changePlan,setChangePlan]=useState(false);
   const [selectedPlan,setSelectedPlan]=useState('scale');
+  const [billing,setBilling]=useState<any>(null);
+  const [loading,setLoading]=useState(true);
+  const [checkoutLoading,setCheckoutLoading]=useState(false);
 
-  const saasInvoices=[
-    {id:'COV-INV-2026-001',date:'8 Agu 2026',period:'8 Agu – 7 Sep 2026',amount:4900000,status:'Lunas'},
-    {id:'COV-INV-2026-002',date:'8 Sep 2026',period:'8 Sep – 7 Okt 2026',amount:4900000,status:'Lunas'}
-  ];
+  useEffect(()=>{
+    api.getBilling()
+      .then(res => {
+        setBilling(res);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.warn('Billing fetch error:', err);
+        setLoading(false);
+      });
+  }, []);
 
-  const handleUpgrade=()=>{
-    s.setNotice('Perubahan paket diajukan. Kuota dan penagihan disesuaikan.');
-    setChangePlan(false);
+  const handleUpgrade=async ()=>{
+    try {
+      setCheckoutLoading(true);
+      const res = await api.createCheckout(selectedPlan);
+      if (res?.paymentUrl) {
+        window.location.href = res.paymentUrl;
+      } else {
+        s.setNotice('Sesi checkout berhasil dibuat. Silakan selesaikan pembayaran.');
+        setChangePlan(false);
+      }
+    } catch (err: any) {
+      s.setNotice(err.message || 'Layanan pembayaran SaaS Mayar belum dikonfigurasi di server.');
+      setChangePlan(false);
+    } finally {
+      setCheckoutLoading(false);
+    }
   };
+
+  const planName = billing?.subscription?.planName || (s.subscription === 'Aktif' ? 'Core' : 'Non-Aktif');
+  const isSubActive = billing?.status === 'ACTIVE' || billing?.subscription?.status === 'ACTIVE';
+  const planAmount = isSubActive && billing?.subscription?.amount ? money(billing.subscription.amount) + ' / bulan' : 'Rp0 / bulan';
+  const quotaUsed = billing?.quota?.used ?? s.projects.filter(p=>p.status==='Aktif').length;
+  const quotaTotal = billing?.quota?.total ?? (isSubActive ? 3 : 0);
+  const quotaPercent = quotaTotal > 0 ? Math.min(100, Math.round((quotaUsed / quotaTotal) * 100)) : 0;
+  const saasInvoices: any[] = billing?.history || [];
 
   return (
     <>
@@ -45,70 +77,78 @@ export function BillingView(){
             <div className="panel-padding stack" style={{gap:16}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <div>
-                  <h3 style={{fontSize:22,fontWeight:800,color:'#fff'}}>Paket Core</h3>
-                  <span style={{fontSize:13,color:'#a3a3a3'}}>Rp4.900.000 / bulan</span>
+                  <h3 style={{fontSize:22,fontWeight:800,color:'#fff'}}>Paket {planName}</h3>
+                  <span style={{fontSize:13,color:'#a3a3a3'}}>{planAmount}</span>
                 </div>
-                <Badge tone="success">Aktif · Berlangganan</Badge>
+                {isSubActive ? (
+                  <Badge tone="success">Aktif · Berlangganan</Badge>
+                ) : (
+                  <Badge tone="neutral">Non-Aktif</Badge>
+                )}
               </div>
 
               <div style={{background:'#161616',padding:16,borderRadius:10,border:'1px solid #242424'}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:13,marginBottom:8}}>
                   <span>Penggunaan Kuota Proyek Aktif:</span>
-                  <strong>3 dari 3 proyek terpakai (100%)</strong>
+                  <strong>{quotaUsed} dari {quotaTotal} proyek terpakai ({quotaPercent}%)</strong>
                 </div>
                 <div className="mini-track">
-                  <i style={{width:'100%',background:'#fbbf24'}}/>
+                  <i style={{width:`${quotaPercent}%`,background: quotaPercent >= 100 ? '#ef4444' : '#fbbf24'}}/>
                 </div>
                 <small style={{color:'#888',fontSize:11,display:'block',marginTop:6}}>
-                  Untuk menambah proyek baru, lakukan upgrade ke paket Scale (hingga 10 proyek) atau arsipkan proyek selesai.
+                  {quotaTotal > 0 ? 'Untuk menambah kapasitas proyek baru, lakukan upgrade paket atau arsipkan proyek selesai.' : 'Aktifkan langganan untuk menambah kuota proyek.'}
                 </small>
               </div>
 
               <dl className="key-values">
                 <dt>Periode Aktif</dt>
-                <dd>8 September 2026 s.d. 8 Oktober 2026</dd>
+                <dd>{billing?.subscription?.periodStart ? `${billing.subscription.periodStart} s.d. ${billing.subscription.periodEnd}` : 'Belum aktif'}</dd>
                 <dt>Metode Bayar</dt>
-                <dd>BCA Virtual Account (Mayar)</dd>
-                <dt>Perpanjangan</dt>
-                <dd>Otomatis setiap bulan</dd>
+                <dd>Mayar Payment Gateway</dd>
+                <dt>Status Penagihan</dt>
+                <dd>{billing?.status || 'NONE'}</dd>
               </dl>
             </div>
           </Panel>
 
-          <Panel title="Informasi Penagihan & Faktur" subtitle="Data NPWP perusahaan untuk e-Faktur">
+          <Panel title="Informasi Penagihan & Faktur" subtitle="Data entitas perusahaan">
             <div className="panel-padding stack" style={{gap:14}}>
               <dl className="key-values">
                 <dt>Nama Entitas</dt>
-                <dd>{s.company}</dd>
-                <dt>NPWP</dt>
-                <dd>01.234.567.8-012.000</dd>
-                <dt>Alamat Faktur</dt>
-                <dd>Gedung Artha Graha Lt. 8, SCBD, Jakarta Selatan</dd>
+                <dd>{s.company || '-'}</dd>
                 <dt>Email Penagihan</dt>
-                <dd>finance@ruangkarya.co.id</dd>
+                <dd>{s.userEmail || '-'}</dd>
+                <dt>ID Organisasi</dt>
+                <dd>{s.actor?.orgId || '-'}</dd>
               </dl>
               <Notice tone="info">
-                Tagihan SaaS ini terpisah dari tagihan konstruksi di menu Tagihan Proyek.
+                Tagihan SaaS ini terpisah dari tagihan operasional proyek konstruksi.
               </Notice>
             </div>
           </Panel>
         </div>
 
         <Panel title="Riwayat Pembayaran Langganan COVE" subtitle="Invoice resmi langganan SaaS">
-          <DataTable
-            caption="Riwayat Faktur SaaS COVE"
-            headers={['Nomor Invoice SaaS','Tanggal','Periode Layanan','Nominal','Status','Tindakan']}
-            rows={saasInvoices.map(inv=>[
-              <strong>{inv.id}</strong>,
-              inv.date,
-              inv.period,
-              money(inv.amount),
-              <Badge tone="success">{inv.status}</Badge>,
-              <button className="btn btn-outline" style={{minHeight:28,padding:'2px 8px',fontSize:11}} onClick={()=>s.setNotice('Mengunduh receipt '+inv.id)}>
-                <Download size={12}/> Unduh Receipt
-              </button>
-            ])}
-          />
+          {saasInvoices.length > 0 ? (
+            <DataTable
+              caption="Riwayat Faktur SaaS COVE"
+              headers={['Nomor Invoice SaaS','Tanggal','Periode Layanan','Nominal','Status','Tindakan']}
+              rows={saasInvoices.map(inv=>[
+                <strong>{inv.id}</strong>,
+                inv.date,
+                inv.period || '-',
+                money(inv.amount),
+                <Badge tone="success">{inv.status}</Badge>,
+                <button className="btn btn-outline" style={{minHeight:28,padding:'2px 8px',fontSize:11}} onClick={()=>s.setNotice('Mengunduh receipt '+inv.id)}>
+                  <Download size={12}/> Unduh Receipt
+                </button>
+              ])}
+            />
+          ) : (
+            <div className="panel-padding" style={{textAlign:'center',color:'#888',padding:'32px 16px'}}>
+              Belum ada riwayat pembayaran langganan SaaS pada organisasi ini.
+            </div>
+          )}
         </Panel>
       </StateBoundary>
 
@@ -120,16 +160,19 @@ export function BillingView(){
             value={selectedPlan}
             onChange={setSelectedPlan}
             options={[
-              {value:'scale',label:'Scale (s.d. 10 Proyek Aktif) — Rp9.900.000 / bln'},
-              {value:'enterprise',label:'Enterprise (Kustom Proyek) — Hubungi Sales'}
+              {value:'core',label:'Core (s.d. 5 Proyek Aktif) — Rp4.900.000 / bln'},
+              {value:'pilot',label:'Paid Pilot (s.d. 10 Proyek Aktif) — Rp7.500.000 / bln'},
+              {value:'scale',label:'Scale (s.d. 25 Proyek Aktif) — Rp9.900.000 / bln'}
             ]}
           />
           <Notice tone="info">
-            Penyesuaian biaya akan diperhitungkan secara prorata pada siklus penagihan berikutnya.
+            Pembayaran akan diproses secara aman melalui gateway Mayar.
           </Notice>
           <div className="button-row">
             <Btn secondary onClick={()=>setChangePlan(false)}>Batal</Btn>
-            <Btn onClick={handleUpgrade}>Lanjutkan Pembaruan Paket</Btn>
+            <Btn onClick={handleUpgrade} disabled={checkoutLoading}>
+              {checkoutLoading ? 'Memproses...' : 'Lanjutkan ke Pembayaran'}
+            </Btn>
           </div>
         </div>
       </Modal>
@@ -141,14 +184,28 @@ export function CompanySettingsView(){
   const s=useStore();
   const [name,setName]=useState(s.company);
   const [phone,setPhone]=useState('+62 21 555-0199');
-  const [address,setAddress]=useState('Jl. Jend. Sudirman Kav. 52-53, Jakarta Selatan');
+  const [address,setAddress]=useState('');
   const [currency,setCurrency]=useState('IDR (Rupiah Indonesia)');
   const [timezone,setTimezone]=useState('WIB (Asia/Jakarta)');
+  const [saving,setSaving]=useState(false);
 
-  const save=(e:FormEvent)=>{
+  const save=async (e:FormEvent)=>{
     e.preventDefault();
-    s.setCompany(name);
-    s.setNotice('Pengaturan perusahaan berhasil disimpan.');
+    if (!s.actor?.orgId) {
+      s.setNotice('Organisasi aktif belum dipilih.');
+      return;
+    }
+    try {
+      setSaving(true);
+      await api.updateOrganization(s.actor.orgId, { legalName: name, displayName: name });
+      s.setCompany(name);
+      s.setNotice('Pengaturan perusahaan berhasil disimpan ke server.');
+      await s.reloadData();
+    } catch (err: any) {
+      s.setNotice(err.message || 'Gagal menyimpan perubahan ke server.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -165,9 +222,9 @@ export function CompanySettingsView(){
             <form onSubmit={save} className="panel-padding stack" style={{gap:16}}>
               <Field label="Nama Perusahaan (PT/CV)" required value={name} onChange={e=>setName(e.target.value)}/>
               <Field label="Nomor Telepon Kantor" required value={phone} onChange={e=>setPhone(e.target.value)}/>
-              <Field label="Alamat Kantor Pusat" multiline required value={address} onChange={e=>setAddress(e.target.value)}/>
+              <Field label="Alamat Kantor Pusat" multiline value={address} onChange={e=>setAddress(e.target.value)}/>
               {s.writeable ? (
-                <Btn type="submit">Simpan Perubahan</Btn>
+                <Btn type="submit" disabled={saving}>{saving ? 'Menyimpan...' : 'Simpan Perubahan'}</Btn>
               ) : (
                 <Notice tone="warning">Hanya Pengelola Perusahaan yang dapat mengubah pengaturan ini.</Notice>
               )}

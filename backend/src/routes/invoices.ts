@@ -1,6 +1,6 @@
 // ============================================================================
-// COVE Backend — Invoices & Cash Receipts API Routes (Gate P0-A)
-// Enforces request-scoped actor, tenant org isolation, and pure RBAC checks.
+// COVE Backend — Invoices & Cash Receipts API Routes (Gate P0-A.3)
+// Enforces request-scoped actor, fail-closed tenant org isolation, and RBAC checks.
 // ============================================================================
 
 import {Hono} from 'hono';
@@ -19,14 +19,13 @@ invoicesRoute.use('/invoices/*', requireAuth);
 // GET /api/invoices
 invoicesRoute.get('/invoices', (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   const projectId = c.req.query('projectId');
 
-  // Tenant Isolation: only return invoices belonging to actor's organization
-  let list = db.invoices.filter(i => {
-    if (i.orgId) return i.orgId === actor.orgId;
-    const proj = db.projects.find(p => p.id === i.projectId);
-    return !proj || !proj.orgId || proj.orgId === actor.orgId;
-  });
+  // Tenant Isolation: only return invoices belonging strictly to actor's organization
+  let list = db.invoices.filter(i => i.orgId === actor.orgId);
 
   if (projectId && projectId !== 'all') {
     list = list.filter(i => i.projectId === projectId);
@@ -56,6 +55,9 @@ invoicesRoute.get('/invoices', (c) => {
 // POST /api/invoices
 invoicesRoute.post('/invoices', async (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   if (!AuthService.canManageFinance(actor.role)) {
     return c.json({success: false, error: 'Hanya Finance / Owner yang berwenang menerbitkan tagihan proyek.'}, 403);
   }
@@ -67,9 +69,10 @@ invoicesRoute.post('/invoices', async (c) => {
     return c.json({success: false, error: 'Semua kolom pokok invoice wajib diisi.'}, 400);
   }
 
-  const project = db.projects.find(p => p.id === projectId && (!p.orgId || p.orgId === actor.orgId));
+  // Ensure project belongs to actor's organization
+  const project = db.projects.find(p => p.id === projectId && p.orgId === actor.orgId);
   if (!project) {
-    return c.json({success: false, error: 'Proyek tidak ditemukan.'}, 404);
+    return c.json({success: false, error: 'Proyek tidak ditemukan pada organisasi ini.'}, 404);
   }
 
   // Cek nomor duplikat pada proyek ini
@@ -112,6 +115,9 @@ invoicesRoute.post('/invoices', async (c) => {
 // POST /api/invoices/receipts (Catat Penerimaan Kas Proyek)
 invoicesRoute.post('/invoices/receipts', async (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   if (!AuthService.canManageFinance(actor.role)) {
     return c.json({success: false, error: 'Hanya Finance / Owner yang berwenang mencatat penerimaan kas.'}, 403);
   }
@@ -120,7 +126,7 @@ invoicesRoute.post('/invoices/receipts', async (c) => {
   const amount = Number(body.amount ?? body.receivedAmount);
 
   // Verify project ownership
-  const project = db.projects.find(p => p.id === body.projectId && (!p.orgId || p.orgId === actor.orgId));
+  const project = db.projects.find(p => p.id === body.projectId && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan pada organisasi ini.'}, 404);
   }

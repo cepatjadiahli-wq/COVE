@@ -381,23 +381,33 @@ const initialAdminAuditLogs: AdminAuditLogRecord[] = [];
 export class DataStore {
   private filePath = DB_FILE;
 
-  public organizations: OrganizationEntity[] = structuredClone(initialOrganizations);
-  public profiles: ProfileEntity[] = structuredClone(initialProfiles);
-  public organizationMemberships: OrganizationMembershipEntity[] = structuredClone(initialMemberships);
-  public platformAdmins: PlatformAdminRecord[] = structuredClone(initialPlatformAdmins);
-  public platformRoleGrants: PlatformRoleGrantRecord[] = structuredClone(initialPlatformRoleGrants);
-  public adminAuditLogs: AdminAuditLogRecord[] = structuredClone(initialAdminAuditLogs);
+  public organizations: OrganizationEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialOrganizations);
+  public profiles: ProfileEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialProfiles);
+  public organizationMemberships: OrganizationMembershipEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialMemberships);
+  public platformAdmins: PlatformAdminRecord[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialPlatformAdmins);
+  public platformRoleGrants: PlatformRoleGrantRecord[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialPlatformRoleGrants);
+  public adminAuditLogs: AdminAuditLogRecord[] = [];
 
-  public projects: ProjectEntity[] = structuredClone(initialProjects);
-  public actions: ActionEntity[] = structuredClone(initialActions);
-  public invoices: InvoiceEntity[] = structuredClone(initialInvoices);
-  public documents: DocumentRecord[] = structuredClone(initialDocuments);
-  public tickets: SupportTicketEntity[] = structuredClone(initialTickets);
-  public features: FeatureRequestEntity[] = structuredClone(initialFeatures);
+  public projects: ProjectEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialProjects);
+  public actions: ActionEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialActions);
+  public invoices: InvoiceEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialInvoices);
+  public documents: DocumentRecord[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialDocuments);
+  public tickets: SupportTicketEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialTickets);
+  public features: FeatureRequestEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialFeatures);
   public get featureRequests(): FeatureRequestEntity[] { return this.features; }
-  public recoveryLeads: RecoveryLeadEntity[] = structuredClone(initialRecoveryLeads);
+  public recoveryLeads: RecoveryLeadEntity[] = process.env.NODE_ENV === 'production' ? [] : structuredClone(initialRecoveryLeads);
   public webhooks: WebhookEventRecord[] = [];
-  public subscription: SubscriptionEntity = {
+  public subscription: SubscriptionEntity = process.env.NODE_ENV === 'production' ? {
+    id: '',
+    planId: 'free',
+    planName: 'None',
+    status: 'INACTIVE',
+    quotaUsed: 0,
+    quotaTotal: 0,
+    periodStart: '',
+    periodEnd: '',
+    amount: 0
+  } : {
     id: 'sub-001',
     planId: 'core',
     planName: 'Core',
@@ -409,11 +419,43 @@ export class DataStore {
     amount: 4900000
   };
 
-  constructor() {
+  constructor(customPath?: string) {
+    if (customPath) {
+      this.filePath = customPath;
+    }
     this.load();
   }
 
   public load(): void {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd) {
+      this.projects = [];
+      this.actions = [];
+      this.invoices = [];
+      this.documents = [];
+      this.tickets = [];
+      this.features = [];
+      this.recoveryLeads = [];
+      this.organizations = [];
+      this.profiles = [];
+      this.organizationMemberships = [];
+      this.platformAdmins = [];
+      this.platformRoleGrants = [];
+      this.adminAuditLogs = [];
+      this.subscription = {
+        id: '',
+        planId: 'free',
+        planName: 'None',
+        status: 'INACTIVE',
+        quotaUsed: 0,
+        quotaTotal: 0,
+        periodStart: '',
+        periodEnd: '',
+        amount: 0
+      };
+      return;
+    }
+
     try {
       if (fs.existsSync(this.filePath)) {
         const raw = fs.readFileSync(this.filePath, 'utf-8');
@@ -437,7 +479,27 @@ export class DataStore {
         this.save();
       }
     } catch (e) {
-      console.warn('Could not read cove_db.json, using initial in-memory seed:', e);
+      if (isProd) {
+        this.projects = [];
+        this.actions = [];
+        this.invoices = [];
+        this.documents = [];
+        this.tickets = [];
+        this.features = [];
+        this.recoveryLeads = [];
+        this.subscription = {
+          id: '',
+          planId: 'free',
+          planName: 'None',
+          status: 'INACTIVE',
+          quotaUsed: 0,
+          quotaTotal: 0,
+          periodStart: '',
+          periodEnd: '',
+          amount: 0
+        };
+      }
+      console.warn('Could not read cove_db.json, using fallback store state:', e);
     }
   }
 

@@ -10,7 +10,9 @@ import type {
   OrganizationMembershipEntity,
   PlatformAdminRecord,
   PlatformRoleScope,
-  AdminAuditLogRecord
+  AdminAuditLogRecord,
+  TenantSubscriptionEntity,
+  CheckoutSessionEntity
 } from '../types/domain.js';
 import {pgPool} from '../db/store.js';
 
@@ -20,14 +22,21 @@ export interface MembershipWithOrganization extends OrganizationMembershipEntity
 
 export interface IIdentityRepository {
   findProfileByAuthUserId(authUserId: string): Promise<ProfileEntity | null>;
+  ensureProfileForAuthUser(authUserId: string, email: string, fullName?: string): Promise<ProfileEntity>;
   getActiveMembershipsByProfileId(profileId: string): Promise<MembershipWithOrganization[]>;
   getOrganizationById(orgId: string): Promise<OrganizationEntity | null>;
+  updateOrganization(orgId: string, data: { legalName?: string; displayName?: string }): Promise<OrganizationEntity>;
   getPlatformAdminByAuthUserId(authUserId: string): Promise<PlatformAdminRecord | null>;
   getPlatformRoleGrants(adminId: string): Promise<PlatformRoleScope[]>;
   createOrganizationForProfile(
     profileId: string,
     data: { legalName: string; displayName?: string }
   ): Promise<{ organization: OrganizationEntity; membership: OrganizationMembershipEntity }>;
+  getSubscriptionByOrgId(orgId: string): Promise<TenantSubscriptionEntity | null>;
+  upsertSubscription(orgId: string, data: Partial<TenantSubscriptionEntity>): Promise<TenantSubscriptionEntity>;
+  createCheckoutSession(data: CheckoutSessionEntity): Promise<CheckoutSessionEntity>;
+  getCheckoutSessionByReference(reference: string): Promise<CheckoutSessionEntity | null>;
+  updateCheckoutSessionStatus(reference: string, status: string): Promise<void>;
   recordAdminAuditLog(log: {
     actorAdminId?: string;
     action: string;
@@ -170,6 +179,109 @@ export class PostgresIdentityRepository implements IIdentityRepository {
       client.release();
     }
   }
+
+  public async ensureProfileForAuthUser(authUserId: string, email: string, fullName?: string): Promise<ProfileEntity> {
+    const existing = await this.findProfileByAuthUserId(authUserId);
+    if (existing) return existing;
+
+    const resolvedName = fullName?.trim() || email.split('@')[0] || 'Pengguna COVE';
+    const query = `
+      INSERT INTO public.profiles (auth_user_id, full_name, status)
+      VALUES ($1, $2, 'ACTIVE')
+      ON CONFLICT (auth_user_id) DO UPDATE SET full_name = EXCLUDED.full_name
+      RETURNING id, auth_user_id AS "authUserId", full_name AS "fullName", phone, status, created_at AS "createdAt"
+    `;
+    const res = await pgPool.query(query, [authUserId, resolvedName]);
+    return res.rows[0];
+  }
+
+  public async updateOrganization(orgId: string, data: { legalName?: string; displayName?: string }): Promise<OrganizationEntity> {
+    const existing = await this.getOrganizationById(orgId);
+    if (!existing) throw new Error('Organisasi tidak ditemukan.');
+
+    const legalName = data.legalName?.trim() || existing.legalName;
+    const displayName = data.displayName?.trim() || data.legalName?.trim() || existing.displayName;
+
+    const res = await pgPool.query(`
+      UPDATE public.organizations
+      SET legal_name = $1, display_name = $2, updated_at = NOW()
+      WHERE id = $3
+      RETURNING id, legal_name AS "legalName", display_name AS "displayName", timezone, default_currency AS "defaultCurrency", status
+    `, [legalName, displayName, orgId]);
+    return res.rows[0];
+  }
+
+  public async getSubscriptionByOrgId(orgId: string): Promise<TenantSubscriptionEntity | null> {
+    const res = await pgPool.query(`
+      SELECT s.id, s.org_id AS "organizationId", s.plan_id AS "planId", p.name AS "planName", s.status,
+             s.current_period_start AS "currentPeriodStart", s.current_period_end AS "currentPeriodEnd",
+             s.created_at AS "createdAt", s.updated_at AS "updatedAt"
+      FROM public.subscriptions s
+      LEFT JOIN public.plans p ON p.id = s.plan_id
+      WHERE s.org_id = $1
+    `, [orgId]);
+    return res.rows[0] || null;
+  }
+
+  public async upsertSubscription(orgId: string, data: Partial<TenantSubscriptionEntity>): Promise<TenantSubscriptionEntity> {
+    const planId = data.planId || 'core';
+    const status = data.status || 'ACTIVE';
+    const start = data.currentPeriodStart || new Date().toISOString();
+    const end = data.currentPeriodEnd || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+
+    const res = await pgPool.query(`
+      INSERT INTO public.subscriptions (org_id, plan_id, status, current_period_start, current_period_end)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (org_id) DO UPDATE
+      SET plan_id = EXCLUDED.plan_id, status = EXCLUDED.status,
+          current_period_start = EXCLUDED.current_period_start,
+          current_period_end = EXCLUDED.current_period_end,
+          updated_at = NOW()
+      RETURNING id, org_id AS "organizationId", plan_id AS "planId", status,
+                current_period_start AS "currentPeriodStart", current_period_end AS "currentPeriodEnd",
+                created_at AS "createdAt", updated_at AS "updatedAt"
+    `, [orgId, planId, status, start, end]);
+    return res.rows[0];
+  }
+
+  public async createCheckoutSession(data: CheckoutSessionEntity): Promise<CheckoutSessionEntity> {
+    const res = await pgPool.query(`
+      INSERT INTO public.checkout_sessions (organization_id, provider, provider_reference, provider_checkout_id, status, plan, amount, currency)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id, organization_id AS "organizationId", provider, provider_reference AS "providerReference",
+                provider_checkout_id AS "providerCheckoutId", status, plan, amount, currency,
+                created_at AS "createdAt", updated_at AS "updatedAt"
+    `, [
+      data.organizationId,
+      data.provider || 'MAYAR',
+      data.providerReference,
+      data.providerCheckoutId || null,
+      data.status || 'PENDING',
+      data.plan,
+      data.amount,
+      data.currency || 'IDR'
+    ]);
+    return res.rows[0];
+  }
+
+  public async getCheckoutSessionByReference(reference: string): Promise<CheckoutSessionEntity | null> {
+    const res = await pgPool.query(`
+      SELECT id, organization_id AS "organizationId", provider, provider_reference AS "providerReference",
+             provider_checkout_id AS "providerCheckoutId", status, plan, amount, currency,
+             created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM public.checkout_sessions
+      WHERE provider_reference = $1
+    `, [reference]);
+    return res.rows[0] || null;
+  }
+
+  public async updateCheckoutSessionStatus(reference: string, status: string): Promise<void> {
+    await pgPool.query(`
+      UPDATE public.checkout_sessions
+      SET status = $1, updated_at = NOW()
+      WHERE provider_reference = $2
+    `, [status, reference]);
+  }
 }
 
 /**
@@ -180,8 +292,90 @@ export class InMemoryIdentityRepository implements IIdentityRepository {
   public organizations: OrganizationEntity[] = [];
   public memberships: OrganizationMembershipEntity[] = [];
   public platformAdmins: PlatformAdminRecord[] = [];
+  public subscriptions: TenantSubscriptionEntity[] = [];
+  public checkoutSessions: CheckoutSessionEntity[] = [];
   public platformRoleGrants: Array<{ id: string; adminId: string; roleScope: PlatformRoleScope; revokedAt?: string | null }> = [];
   public adminAuditLogs: Array<AdminAuditLogRecord> = [];
+
+  public async ensureProfileForAuthUser(authUserId: string, email: string, fullName?: string): Promise<ProfileEntity> {
+    let existing = this.profiles.find(p => p.authUserId === authUserId);
+    if (!existing) {
+      existing = {
+        id: `prof-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        authUserId,
+        fullName: fullName?.trim() || email.split('@')[0] || 'Pengguna COVE',
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString()
+      };
+      this.profiles.push(existing);
+    }
+    return {...existing};
+  }
+
+  public async updateOrganization(orgId: string, data: { legalName?: string; displayName?: string }): Promise<OrganizationEntity> {
+    const org = this.organizations.find(o => o.id === orgId);
+    if (!org) throw new Error('Organisasi tidak ditemukan.');
+    if (data.legalName) org.legalName = data.legalName.trim();
+    if (data.displayName) org.displayName = data.displayName.trim();
+    return {...org};
+  }
+
+  public async getSubscriptionByOrgId(orgId: string): Promise<TenantSubscriptionEntity | null> {
+    const s = this.subscriptions.find(x => x.organizationId === orgId);
+    return s ? {...s} : null;
+  }
+
+  public async upsertSubscription(orgId: string, data: Partial<TenantSubscriptionEntity>): Promise<TenantSubscriptionEntity> {
+    let sub = this.subscriptions.find(x => x.organizationId === orgId);
+    if (sub) {
+      if (data.planId) sub.planId = data.planId;
+      if (data.planName) sub.planName = data.planName;
+      if (data.status) sub.status = data.status;
+      if (data.currentPeriodStart) sub.currentPeriodStart = data.currentPeriodStart;
+      if (data.currentPeriodEnd) sub.currentPeriodEnd = data.currentPeriodEnd;
+      if (data.amount !== undefined) sub.amount = data.amount;
+      sub.updatedAt = new Date().toISOString();
+    } else {
+      sub = {
+        id: `sub-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        organizationId: orgId,
+        planId: data.planId || 'core',
+        planName: data.planName || 'Core',
+        status: data.status || 'ACTIVE',
+        currentPeriodStart: data.currentPeriodStart || new Date().toISOString(),
+        currentPeriodEnd: data.currentPeriodEnd || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+        amount: data.amount || 4900000,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      this.subscriptions.push(sub);
+    }
+    return {...sub};
+  }
+
+  public async createCheckoutSession(data: CheckoutSessionEntity): Promise<CheckoutSessionEntity> {
+    const session = {
+      ...data,
+      id: data.id || `chk-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    this.checkoutSessions.push(session);
+    return {...session};
+  }
+
+  public async getCheckoutSessionByReference(reference: string): Promise<CheckoutSessionEntity | null> {
+    const c = this.checkoutSessions.find(x => x.providerReference === reference);
+    return c ? {...c} : null;
+  }
+
+  public async updateCheckoutSessionStatus(reference: string, status: string): Promise<void> {
+    const c = this.checkoutSessions.find(x => x.providerReference === reference);
+    if (c) {
+      c.status = status as any;
+      c.updatedAt = new Date().toISOString();
+    }
+  }
 
   public async findProfileByAuthUserId(authUserId: string): Promise<ProfileEntity | null> {
     const p = this.profiles.find(x => x.authUserId === authUserId && x.status === 'ACTIVE');

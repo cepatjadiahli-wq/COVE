@@ -15,7 +15,7 @@ import type {
 } from './domain';
 import { INITIAL_JOURNEY, type Journey } from './journey';
 import { readConsent, saveConsent } from './privacy';
-import { api } from './api';
+import { api, setActiveOrganizationId } from './api';
 import { supabase } from './supabase';
 
 export type TenantRole =
@@ -55,6 +55,9 @@ function useWorkspaceStore() {
   const [userEmail, setUserEmail] = useState('');
   const [role, setRoleState] = useState<TenantRole | null>(null);
   const [company, setCompany] = useState('');
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(() => typeof window !== 'undefined' ? localStorage.getItem('cove_active_org_id') : null);
+  const [tenantOptions, setTenantOptions] = useState<Array<{ orgId: string; membershipId: string; role: string; legalName: string; displayName: string }>>([]);
+  const [tenantSelectionRequired, setTenantSelectionRequired] = useState(false);
 
   const [state, setState] = useState<AppState>('normal');
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -88,6 +91,14 @@ function useWorkspaceStore() {
         setUserEmail(user.email || '');
         setRoleState(user.role || null);
         setCompany(user.company || '');
+        setTenantSelectionRequired(Boolean(meRes.value.tenantSelectionRequired));
+        if (Array.isArray(meRes.value.tenantOptions)) {
+          setTenantOptions(meRes.value.tenantOptions);
+        }
+        if (user.orgId) {
+          setSelectedTenantId(user.orgId);
+          setActiveOrganizationId(user.orgId);
+        }
         setAuthStatus('authenticated');
         setJourney(j => ({
           ...j,
@@ -101,6 +112,8 @@ function useWorkspaceStore() {
         setActor(null);
         setRoleState(null);
         setCompany('');
+        setTenantOptions([]);
+        setTenantSelectionRequired(false);
       }
 
       if (projRes.status === 'fulfilled' && Array.isArray(projRes.value)) {
@@ -292,6 +305,13 @@ function useWorkspaceStore() {
     setNotice('Draf tersimpan di riwayat aktivitas.');
   };
 
+  const selectTenant = async (orgId: string) => {
+    setActiveOrganizationId(orgId);
+    setSelectedTenantId(orgId);
+    setTenantSelectionRequired(false);
+    await reloadData();
+  };
+
   return {
     journey,
     setJourney,
@@ -322,6 +342,10 @@ function useWorkspaceStore() {
     setState,
     company,
     setCompany,
+    selectedTenantId,
+    tenantOptions,
+    tenantSelectionRequired,
+    selectTenant,
     drafts,
     draft,
     notice,

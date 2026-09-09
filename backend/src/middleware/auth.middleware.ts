@@ -51,8 +51,15 @@ export async function requireAuth(c: Context, next: Next) {
   const authUserId = verification.user.id;
   const identityRepo = getIdentityRepository();
 
-  // 1. Resolve Profile from PostgreSQL
-  const profile = await identityRepo.findProfileByAuthUserId(authUserId);
+  // 1. Resolve Profile from PostgreSQL (Bootstrap automatically if fresh user)
+  let profile = await identityRepo.findProfileByAuthUserId(authUserId);
+  if (!profile) {
+    profile = await identityRepo.ensureProfileForAuthUser(
+      authUserId,
+      verification.user.email || 'user@cove.id',
+      (verification.user as any)?.user_metadata?.full_name || (verification.user as any)?.user_metadata?.name || verification.user.email?.split('@')[0] || 'Pengguna COVE'
+    );
+  }
   if (!profile) {
     return c.json({
       success: false,
@@ -76,7 +83,7 @@ export async function requireAuth(c: Context, next: Next) {
   if (activeMemberships.length === 0) {
     if (!isPlatformAdmin) {
       // Allow onboarding and identity discovery routes for authenticated users who have not yet created/joined an organization
-      const isIdentityOrOnboardingRoute = c.req.path === '/api/auth/me' || c.req.path === '/api/organizations' || c.req.path === '/api/auth/profile';
+      const isIdentityOrOnboardingRoute = c.req.path === '/api/auth/me' || c.req.path === '/api/organizations' || c.req.path === '/api/auth/profile' || c.req.path === '/api/auth/tenant-options';
       if (!isIdentityOrOnboardingRoute) {
         return c.json({
           success: false,
@@ -99,20 +106,26 @@ export async function requireAuth(c: Context, next: Next) {
     // Multi-membership: >1 active memberships requires explicit valid tenant selection
     const requestedOrgId = c.req.header('x-organization-id');
     if (!requestedOrgId) {
-      return c.json({
-        success: false,
-        code: 'TENANT_SELECTION_REQUIRED',
-        error: 'Multi-organisasi terdeteksi. Silakan tentukan organisasi aktif melalui header x-organization-id.'
-      }, 400);
+      const isIdentityRoute = c.req.path === '/api/auth/me' || c.req.path === '/api/auth/tenant-options' || c.req.path === '/api/organizations';
+      if (isIdentityRoute) {
+        selectedMembership = null;
+      } else {
+        return c.json({
+          success: false,
+          code: 'TENANT_SELECTION_REQUIRED',
+          error: 'Multi-organisasi terdeteksi. Silakan tentukan organisasi aktif melalui header x-organization-id.'
+        }, 400);
+      }
+    } else {
+      const match = activeMemberships.find(m => m.orgId === requestedOrgId);
+      if (!match) {
+        return c.json({
+          success: false,
+          error: 'Akses ditolak: Pengguna bukan anggota aktif dari organisasi yang diminta.'
+        }, 403);
+      }
+      selectedMembership = match;
     }
-    const match = activeMemberships.find(m => m.orgId === requestedOrgId);
-    if (!match) {
-      return c.json({
-        success: false,
-        error: 'Akses ditolak: Pengguna bukan anggota aktif dari organisasi yang diminta.'
-      }, 403);
-    }
-    selectedMembership = match;
   }
 
   // 4. Construct Request-Scoped Actor

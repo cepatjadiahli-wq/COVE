@@ -38,7 +38,7 @@ webhooksRoute.post('/webhooks/mayar', async (c) => {
     return c.json({success: false, error: 'Payload webhook tidak valid.'}, 400);
   }
 
-  const result = MayarService.handleWebhook(body);
+  const result = await MayarService.handleWebhook(body);
 
   return c.json({
     success: true,

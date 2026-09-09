@@ -1,6 +1,7 @@
 // ============================================================================
-// COVE Backend — SaaS Subscription & Billing API Routes (Gate P0-A)
-// Enforces request-scoped actor, tenant org isolation, and pure RBAC checks.
+// COVE Backend — SaaS Subscription & Billing API Routes (Gate P0-A.3)
+// Enforces request-scoped actor, fail-closed tenant org isolation, and RBAC checks.
+// Canonical subscription authority lives in PostgreSQL / Supabase per-tenant.
 // ============================================================================
 
 import {Hono} from 'hono';
@@ -8,6 +9,8 @@ import {db} from '../db/store.js';
 import {AuthService} from '../services/auth.service.js';
 import {MayarService} from '../services/mayar.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
+import {getIdentityRepository} from '../repositories/identity.repository.js';
+import type {CheckoutSessionEntity} from '../types/domain.js';
 
 export const billingRoute = new Hono();
 
@@ -15,34 +18,80 @@ billingRoute.use('/billing', requireAuth);
 billingRoute.use('/billing/*', requireAuth);
 
 // GET /api/billing
-// Canonical response contains server-derived status: 'NONE' | 'PENDING' | 'ACTIVE' | 'FAILED' | 'EXPIRED'
-billingRoute.get('/billing', (c) => {
+// Canonical response contains server-derived status per tenant organization
+billingRoute.get('/billing', async (c) => {
   const actor = c.get('actor');
-  const activeCount = db.projects.filter(p => (!p.orgId || p.orgId === actor.orgId) && p.status === 'Aktif').length;
-  db.subscription.quotaUsed = activeCount;
+  if (!actor.orgId) {
+    return c.json({
+      success: true,
+      data: {
+        status: 'NONE',
+        subscription: null,
+        quota: { used: 0, total: 0, isFull: true },
+        history: []
+      }
+    });
+  }
+
+  const identityRepo = getIdentityRepository();
+  const sub = await identityRepo.getSubscriptionByOrgId(actor.orgId);
+  const activeCount = db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif').length;
+
+  const quotaTotal = sub?.quotaTotal || (sub?.plan === 'scale' ? 25 : sub?.plan === 'pilot' ? 10 : sub?.plan === 'core' ? 5 : 3);
+  
+  // Status mapping compliant with domain invariants:
+  // 'NONE' | 'PENDING' | 'ACTIVE' | 'FAILED' | 'EXPIRED'
+  let clientStatus: string = 'NONE';
+  if (sub) {
+    if (sub.status === 'ACTIVE') clientStatus = 'ACTIVE';
+    else if (sub.status === 'PENDING') clientStatus = 'PENDING';
+    else if (sub.status === 'EXPIRED' || sub.status === 'CANCELLED' || sub.status === 'CANCELED') clientStatus = 'EXPIRED';
+    else if (sub.status === 'PAST_DUE') clientStatus = 'FAILED';
+    else clientStatus = 'NONE';
+  }
 
   return c.json({
     success: true,
     data: {
-      status: db.subscription.status || 'NONE',
-      subscription: db.subscription,
+      status: clientStatus,
+      subscription: sub ? {
+        id: sub.id,
+        planId: sub.plan || sub.planId || 'core',
+        planName: (sub.plan || sub.planId || 'core').charAt(0).toUpperCase() + (sub.plan || sub.planId || 'core').slice(1),
+        status: sub.status,
+        quotaUsed: activeCount,
+        quotaTotal,
+        periodStart: sub.currentPeriodStart || '2026-09-08',
+        periodEnd: sub.currentPeriodEnd || '2026-10-08',
+        amount: (sub.plan || sub.planId) === 'scale' ? 9900000 : (sub.plan || sub.planId) === 'pilot' ? 7500000 : 4900000
+      } : {
+        id: '',
+        planId: 'free',
+        planName: 'None',
+        status: 'INACTIVE',
+        quotaUsed: activeCount,
+        quotaTotal: 0,
+        periodStart: '',
+        periodEnd: '',
+        amount: 0
+      },
       quota: {
         used: activeCount,
-        total: db.subscription.quotaTotal,
-        isFull: activeCount >= db.subscription.quotaTotal
+        total: quotaTotal,
+        isFull: activeCount >= quotaTotal
       },
-      history: [
-        {id: 'COV-INV-2026-001', date: '2026-08-08', amount: 4900000, status: 'PAID'},
-        {id: 'COV-INV-2026-002', date: '2026-09-08', amount: 4900000, status: 'PAID'}
-      ]
+      history: []
     }
   });
 });
 
 // POST /api/billing/checkout
-// Calls real provider checkout; rejects synthetic URL generation
+// Calls real provider checkout; binds session to actor.orgId; records in checkout_sessions
 billingRoute.post('/billing/checkout', async (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   if (!AuthService.canManageBilling(actor.role)) {
     return c.json({
       success: false,
@@ -56,7 +105,8 @@ billingRoute.post('/billing/checkout', async (c) => {
   const checkoutRes = await MayarService.createCheckoutSession({
     planId,
     customerName: actor.fullName,
-    customerEmail: actor.email
+    customerEmail: actor.email,
+    organizationId: actor.orgId
   });
 
   if (!checkoutRes.success) {
@@ -66,6 +116,25 @@ billingRoute.post('/billing/checkout', async (c) => {
       error: checkoutRes.error,
       message: checkoutRes.message
     }, httpStatus);
+  }
+
+  // Record canonical checkout session bound strictly to tenant organization
+  if (checkoutRes.data) {
+    const identityRepo = getIdentityRepository();
+    const sessionRecord: CheckoutSessionEntity = {
+      id: 'cs-' + Date.now(),
+      organizationId: actor.orgId,
+      provider: 'MAYAR',
+      providerReference: checkoutRes.data.checkoutRef,
+      providerCheckoutId: checkoutRes.data.checkoutRef,
+      status: 'PENDING',
+      plan: planId,
+      amount: checkoutRes.data.total,
+      currency: 'IDR',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    await identityRepo.createCheckoutSession(sessionRecord);
   }
 
   return c.json({

@@ -3,17 +3,208 @@ import {LayoutDashboard,Building2,ListChecks,ReceiptText,ChartNoAxesCombined,Lif
 import {SidebarProvider,Sidebar,SidebarHeader,SidebarContent,SidebarFooter,SidebarMenu,SidebarMenuItem,SidebarMenuButton,useSidebar} from '@/components/ui/sidebar';
 import {DropdownMenu,DropdownMenuTrigger,DropdownMenuContent,DropdownMenuItem,DropdownMenuSeparator} from '@/components/ui/dropdown-menu';
 import {Button} from '@/components/ui/button';
-import {Link,useRoute} from '@/lib/router';import {useStore,type TenantRole,type AppState} from '@/lib/store';
+import {Link,useRoute} from '@/lib/router';
+import {useStore,type TenantRole,type AppState} from '@/lib/store';
 import {Btn,Choice,Modal,Notice,Badge} from './ui';
+
 const navigation=[['Ringkasan','/dashboard',LayoutDashboard],['Proyek','/projects',Building2],['Tindakan','/actions',ListChecks],['Tagihan Proyek','/invoices',ReceiptText],['Laporan','/reports',ChartNoAxesCombined]] as const;
 const adminNav=[['Ringkasan SaaS','/admin',ChartNoAxesCombined],['Langganan & Pembayaran','/admin/billing',CreditCard],['Prospek & Recovery','/admin/recovery',Activity],['Dukungan Pelanggan','/admin/support',MessageSquare],['Usulan Fitur','/admin/features',Lightbulb],['Pengaturan Platform','/admin/settings',SlidersHorizontal]] as const;
-function NavContent({admin}:{admin:boolean}){const {path,go}=useRoute();const {setOpenMobile}=useSidebar();const s=useStore();const nav=admin?adminNav:navigation;const visit=(url:string)=>{go(url);setOpenMobile(false);};
-const displayName = s.userName || (admin ? 'Platform Admin' : 'Pengguna COVE');
-const initials = s.userName ? s.userName.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2) : (admin ? 'PA' : 'CV');
-return <><SidebarHeader className="cove-sidebar-header"><Link href={admin?'/admin':'/dashboard'} className="wordmark">COVE<span>®</span></Link>{admin?<Badge tone="info">Admin • Internal</Badge>:<DropdownMenu><DropdownMenuTrigger render={<Button variant="ghost" className="company-button"/>}><span className="company-icon"><Building2 size={17}/></span><span><strong>{s.company.replace('PT ','')}</strong><small>Workspace perusahaan</small></span><ChevronDown size={15}/></DropdownMenuTrigger><DropdownMenuContent align="start"><DropdownMenuItem onClick={()=>visit('/settings')}><Settings/> Pengaturan perusahaan</DropdownMenuItem><DropdownMenuItem onClick={()=>visit('/settings/team')}><Users/> Tim & peran</DropdownMenuItem><DropdownMenuItem onClick={()=>visit('/billing')}><CreditCard/> Langganan COVE</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem onClick={()=>visit('/')}><ArrowLeft/> Kembali ke situs</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</SidebarHeader><SidebarContent className="cove-sidebar-content"><p className="sidebar-caption">{admin?'OPERASI COVE':'RUANG KERJA'}</p><SidebarMenu>{nav.map(([name,url,Icon])=><SidebarMenuItem key={url}><SidebarMenuButton className="nav-item" isActive={path===url||(url!=='/admin'&&path.startsWith(url+'/'))} onClick={()=>visit(url)}><Icon strokeWidth={1.6}/><span>{name}</span>{name==='Tindakan'&&<span className="nav-count">{s.actions.filter(a=>a.status!=='Selesai').length}</span>}</SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu>{!admin&&<div className="sidebar-projects"><p className="sidebar-caption">PROYEK AKTIF <Link href="/projects" aria-label="Semua proyek"><Plus size={14}/></Link></p>{s.projects.filter(p=>p.status==='Aktif').slice(0,3).map((p,i)=><button key={p.id} onClick={()=>visit('/projects/'+p.id)}><span className={'project-dot dot-'+i}/><span>{p.name}</span></button>)}</div>}</SidebarContent><SidebarFooter className="cove-sidebar-footer">{!admin&&<button className="help-nav" onClick={()=>visit('/support')}><LifeBuoy size={18}/> Bantuan & Feedback <ArrowUpRight size={14}/></button>}<div className="sidebar-user"><div className="avatar">{initials}</div><div><strong>{displayName}</strong><small>{admin ? 'Platform Administrator' : (s.role==='OWNER'?'Pengelola perusahaan':s.role ? s.role.replaceAll('_',' ') : 'Pengguna')}</small></div><DropdownMenu><DropdownMenuTrigger render={<Button variant="ghost" className="icon-button" aria-label="Menu akun"/>}><MoreHorizontal size={18}/></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={()=>visit('/settings/profile')}>Profil & preferensi</DropdownMenuItem><DropdownMenuItem onClick={()=>{s.logout(); visit('/login');}}>Keluar</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div></SidebarFooter></>;}
-function Toolbar({admin}:{admin:boolean}){const [notifications,setNotifications]=useState(false);const [search,setSearch]=useState(false);const [term,setTerm]=useState('');const {toggleSidebar}=useSidebar();const {path,go}=useRoute();const s=useStore();const label=admin?'COVE Admin':navigation.find(n=>path.startsWith(n[1]))?.[0]??(path.startsWith('/support')?'Bantuan & Feedback':path.startsWith('/billing')?'Langganan COVE':'Pengaturan');
-const displayName = s.userName || (admin ? 'Platform Admin' : 'Pengguna COVE');
-const initials = s.userName ? s.userName.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2) : (admin ? 'PA' : 'CV');
-return <><header className="workspace-toolbar"><div className="toolbar-location"><button className="icon-button" aria-label="Buka navigasi" onClick={toggleSidebar}><PanelLeft size={18}/></button><span className="toolbar-separator"/><span>{admin?<ShieldCheck size={16}/>:<Building2 size={16}/>}</span><span>{label}</span></div><div className="toolbar-right"><button className="toolbar-search" onClick={()=>setSearch(true)}><Search size={16}/><span>Cari proyek…</span><kbd>⌕</kbd></button><span className="timezone-label">WIB · IDR</span><button className="icon-button notification-button" aria-label="Lihat notifikasi" onClick={()=>setNotifications(true)}><Bell size={19}/>{!s.readNotifications&&<i/>}</button><Link href="/settings/profile" aria-label={"Profil " + displayName} className="avatar small">{initials}</Link></div></header><Modal open={notifications} onClose={()=>setNotifications(false)} title="Notifikasi"><div className="stack">{s.actions.filter(a=>a.status!=='Selesai').slice(0,3).map(a=><Link className="notification-card" key={a.id} href={'/actions?item='+a.id} onClick={()=>setNotifications(false)}><ListChecks size={18}/><div><strong>{a.title}</strong><p>{a.owner} · {a.due}</p></div><ArrowUpRight size={16}/></Link>)}</div><Btn secondary onClick={()=>{s.setReadNotifications(true);setNotifications(false);}}>Tandai semua dibaca</Btn></Modal><Modal open={search} onClose={()=>setSearch(false)} title="Cari proyek" description="Cari proyek aktif berdasarkan nama atau kode proyek."><input className="standalone-input" autoFocus placeholder="Nama proyek atau kode…" aria-label="Cari proyek atau kode" value={term} onChange={e=>setTerm(e.target.value)}/>{s.projects.filter(p=>(p.name+p.code).toLowerCase().includes(term.toLowerCase())).map(p=><button className="search-result" key={p.id} onClick={()=>{go('/projects/'+p.id);setSearch(false);}}><Building2 size={18}/>{p.name}<ArrowUpRight size={16}/></button>)}</Modal></>;}
-function MobileNav(){const {path,go}=useRoute();const {toggleSidebar}=useSidebar();return <nav className="bottom-nav" aria-label="Navigasi utama mobile">{navigation.slice(0,3).map(([title,url,Icon])=><button key={url} className={path.startsWith(url)?'active':''} onClick={()=>go(url)}><Icon size={20}/>{title}</button>)}<button onClick={toggleSidebar}><MoreHorizontal size={20}/>Lainnya</button></nav>;}
-export function WorkspaceShell({children,admin=false}:{children:ReactNode;admin?:boolean}){const s=useStore();return <SidebarProvider className="cove-shell" style={{'--sidebar-width':'240px'} as React.CSSProperties}><Sidebar className="cove-sidebar"><NavContent admin={admin}/></Sidebar><div className="workspace-area"><Toolbar admin={admin}/><main id="main-content" tabIndex={-1} className="workspace-main">{s.state==='restricted'&&!admin&&<Notice tone="warning">Workspace hanya baca. Anda tetap dapat membaca, mengekspor, dan meminta bantuan. <Link className="text-link" href={s.role==='OWNER'?'/billing':'/support'}>{s.role==='OWNER'?'Kelola langganan':'Hubungi pengelola'}</Link></Notice>}{s.notice&&<div className="session-notice"><Check size={17}/><span>{s.notice}</span><button aria-label="Tutup pemberitahuan" onClick={()=>s.setNotice('')}><X size={16}/></button></div>}{children}<footer className="workspace-footer"><span>COVE · Construction Operations Value Engine</span><span>IDR (Rupiah) · Asia/Jakarta (WIB)</span></footer></main><MobileNav/></div></SidebarProvider>;}
+
+function NavContent({admin}:{admin:boolean}){
+  const {path,go}=useRoute();
+  const {setOpenMobile}=useSidebar();
+  const s=useStore();
+  const nav=admin?adminNav:navigation;
+  const visit=(url:string)=>{go(url);setOpenMobile(false);};
+  const displayName = s.userName || (admin ? 'Platform Admin' : 'Pengguna COVE');
+  const initials = s.userName ? s.userName.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2) : (admin ? 'PA' : 'CV');
+
+  return (
+    <>
+      <SidebarHeader className="cove-sidebar-header">
+        <Link href={admin?'/admin':'/dashboard'} className="wordmark">COVE<span>®</span></Link>
+        {admin ? (
+          <Badge tone="info">Admin • Internal</Badge>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="ghost" className="company-button"/>}>
+              <span className="company-icon"><Building2 size={17}/></span>
+              <span>
+                <strong>{s.company ? s.company.replace('PT ','') : 'Pilih Organisasi'}</strong>
+                <small>{s.role ? s.role.replace('_',' ') : 'Workspace'}</small>
+              </span>
+              <ChevronDown size={15}/>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {s.tenantOptions && s.tenantOptions.length > 1 && (
+                <>
+                  <div style={{padding: '6px 10px', fontSize: 11, color: '#888', fontWeight: 600}}>GANTI ORGANISASI</div>
+                  {s.tenantOptions.map(t => (
+                    <DropdownMenuItem key={t.orgId} onClick={() => s.selectTenant(t.orgId)}>
+                      <Building2 size={14}/> {t.displayName || t.legalName} ({t.role})
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator/>
+                </>
+              )}
+              <DropdownMenuItem onClick={()=>visit('/settings')}><Settings/> Pengaturan perusahaan</DropdownMenuItem>
+              <DropdownMenuItem onClick={()=>visit('/settings/team')}><Users/> Tim & peran</DropdownMenuItem>
+              <DropdownMenuItem onClick={()=>visit('/billing')}><CreditCard/> Langganan COVE</DropdownMenuItem>
+              <DropdownMenuSeparator/><DropdownMenuItem onClick={()=>visit('/')}><ArrowLeft/> Kembali ke situs</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </SidebarHeader>
+      <SidebarContent className="cove-sidebar-content">
+        <p className="sidebar-caption">{admin?'OPERASI COVE':'RUANG KERJA'}</p>
+        <SidebarMenu>
+          {nav.map(([name,url,Icon])=>(
+            <SidebarMenuItem key={url}>
+              <SidebarMenuButton className="nav-item" isActive={path===url||(url!=='/admin'&&path.startsWith(url+'/'))} onClick={()=>visit(url)}>
+                <Icon strokeWidth={1.6}/>
+                <span>{name}</span>
+                {name==='Tindakan'&&<span className="nav-count">{s.actions.filter(a=>a.status!=='Selesai').length}</span>}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+        {!admin&& (
+          <div className="sidebar-projects">
+            <p className="sidebar-caption">PROYEK AKTIF <Link href="/projects" aria-label="Semua proyek"><Plus size={14}/></Link></p>
+            {s.projects.filter(p=>p.status==='Aktif').slice(0,3).map((p,i)=>(
+              <button key={p.id} onClick={()=>visit('/projects/'+p.id)}>
+                <span className={'project-dot dot-'+i}/>
+                <span>{p.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </SidebarContent>
+      <SidebarFooter className="cove-sidebar-footer">
+        {!admin&&<button className="help-nav" onClick={()=>visit('/support')}><LifeBuoy size={18}/> Bantuan & Feedback <ArrowUpRight size={14}/></button>}
+        <div className="sidebar-user">
+          <div className="avatar">{initials}</div>
+          <div>
+            <strong>{displayName}</strong>
+            <small>{admin ? 'Platform Administrator' : (s.role==='OWNER'?'Pengelola perusahaan':s.role ? s.role.replaceAll('_',' ') : 'Pengguna')}</small>
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="ghost" className="icon-button" aria-label="Menu akun"/>}>
+              <MoreHorizontal size={18}/>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={()=>visit('/settings/profile')}>Profil & preferensi</DropdownMenuItem>
+              <DropdownMenuItem onClick={()=>{s.logout(); visit('/login');}}>Keluar</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </SidebarFooter>
+    </>
+  );
+}
+
+function Toolbar({admin}:{admin:boolean}){
+  const [notifications,setNotifications]=useState(false);
+  const [search,setSearch]=useState(false);
+  const [term,setTerm]=useState('');
+  const {toggleSidebar}=useSidebar();
+  const {path,go}=useRoute();
+  const s=useStore();
+  const label=admin?'COVE Admin':navigation.find(n=>path.startsWith(n[1]))?.[0]??(path.startsWith('/support')?'Bantuan & Feedback':path.startsWith('/billing')?'Langganan COVE':'Pengaturan');
+  const displayName = s.userName || (admin ? 'Platform Admin' : 'Pengguna COVE');
+  const initials = s.userName ? s.userName.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2) : (admin ? 'PA' : 'CV');
+
+  return (
+    <>
+      <header className="workspace-toolbar">
+        <div className="toolbar-location">
+          <button className="icon-button" aria-label="Buka navigasi" onClick={toggleSidebar}><PanelLeft size={18}/></button>
+          <span className="toolbar-separator"/>
+          <span>{admin?<ShieldCheck size={16}/>:<Building2 size={16}/>}</span>
+          <span>{label}</span>
+        </div>
+        <div className="toolbar-right">
+          <button className="toolbar-search" onClick={()=>setSearch(true)}><Search size={16}/><span>Cari proyek…</span><kbd>⌕</kbd></button>
+          <span className="timezone-label">WIB · IDR</span>
+          <button className="icon-button notification-button" aria-label="Lihat notifikasi" onClick={()=>setNotifications(true)}><Bell size={19}/>{!s.readNotifications&&<i/>}</button>
+          <Link href="/settings/profile" aria-label={"Profil " + displayName} className="avatar small">{initials}</Link>
+        </div>
+      </header>
+      <Modal open={notifications} onClose={()=>setNotifications(false)} title="Notifikasi">
+        <div className="stack">
+          {s.actions.filter(a=>a.status!=='Selesai').slice(0,3).map(a=>(
+            <Link className="notification-card" key={a.id} href={'/actions?item='+a.id} onClick={()=>setNotifications(false)}>
+              <ListChecks size={18}/>
+              <div><strong>{a.title}</strong><p>{a.owner} · {a.due}</p></div>
+              <ArrowUpRight size={16}/>
+            </Link>
+          ))}
+        </div>
+        <Btn secondary onClick={()=>{s.setReadNotifications(true);setNotifications(false);}}>Tandai semua dibaca</Btn>
+      </Modal>
+      <Modal open={search} onClose={()=>setSearch(false)} title="Cari proyek" description="Cari proyek aktif berdasarkan nama atau kode proyek.">
+        <input className="standalone-input" autoFocus placeholder="Nama proyek atau kode…" aria-label="Cari proyek atau kode" value={term} onChange={e=>setTerm(e.target.value)}/>
+        {s.projects.filter(p=>(p.name+p.code).toLowerCase().includes(term.toLowerCase())).map(p=>(
+          <button className="search-result" key={p.id} onClick={()=>{go('/projects/'+p.id);setSearch(false);}}>
+            <Building2 size={18}/>{p.name}<ArrowUpRight size={16}/>
+          </button>
+        ))}
+      </Modal>
+    </>
+  );
+}
+
+function MobileNav(){
+  const {path,go}=useRoute();
+  const {toggleSidebar}=useSidebar();
+  return (
+    <nav className="bottom-nav" aria-label="Navigasi utama mobile">
+      {navigation.slice(0,3).map(([title,url,Icon])=>(
+        <button key={url} className={path.startsWith(url)?'active':''} onClick={()=>go(url)}>
+          <Icon size={20}/>
+          {title}
+        </button>
+      ))}
+      <button onClick={toggleSidebar}><MoreHorizontal size={20}/>Lainnya</button>
+    </nav>
+  );
+}
+
+export function WorkspaceShell({children,admin=false}:{children:ReactNode;admin?:boolean}){
+  const s=useStore();
+  return (
+    <SidebarProvider className="cove-shell" style={{'--sidebar-width':'240px'} as React.CSSProperties}>
+      <Sidebar className="cove-sidebar"><NavContent admin={admin}/></Sidebar>
+      <div className="workspace-area">
+        <Toolbar admin={admin}/>
+        <main id="main-content" tabIndex={-1} className="workspace-main">
+          {s.tenantSelectionRequired && !admin && (
+            <Modal open={true} onClose={() => {}} title="Pilih Organisasi Aktif" description="Akun Anda terdaftar di beberapa organisasi. Silakan tentukan organisasi kerja yang ingin dibuka:">
+              <div className="stack" style={{gap: 12}}>
+                {s.tenantOptions.map(t => (
+                  <button
+                    key={t.orgId}
+                    className="btn btn-outline"
+                    style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', width: '100%', textAlign: 'left'}}
+                    onClick={() => s.selectTenant(t.orgId)}
+                  >
+                    <div>
+                      <strong>{t.displayName || t.legalName}</strong>
+                      <div style={{fontSize: 12, color: '#888'}}>Peran: {t.role}</div>
+                    </div>
+                    <ArrowUpRight size={16}/>
+                  </button>
+                ))}
+              </div>
+            </Modal>
+          )}
+          {s.state==='restricted'&&!admin&&<Notice tone="warning">Workspace hanya baca. Anda tetap dapat membaca, mengekspor, dan meminta bantuan. <Link className="text-link" href={s.role==='OWNER'?'/billing':'/support'}>{s.role==='OWNER'?'Kelola langganan':'Hubungi pengelola'}</Link></Notice>}
+          {s.notice&&<div className="session-notice"><Check size={17}/><span>{s.notice}</span><button aria-label="Tutup pemberitahuan" onClick={()=>s.setNotice('')}><X size={16}/></button></div>}
+          {children}
+          <footer className="workspace-footer"><span>COVE · Construction Operations Value Engine</span><span>IDR (Rupiah) · Asia/Jakarta (WIB)</span></footer>
+        </main>
+        <MobileNav/>
+      </div>
+    </SidebarProvider>
+  );
+}

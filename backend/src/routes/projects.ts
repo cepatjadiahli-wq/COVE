@@ -18,11 +18,14 @@ projectsRoute.use('/projects/*', requireAuth);
 // GET /api/projects
 projectsRoute.get('/projects', (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   const status = c.req.query('status');
   const archived = c.req.query('archived');
 
-  // Tenant Isolation: only return projects belonging to actor's organization
-  let list = db.projects.filter(p => !p.orgId || p.orgId === actor.orgId);
+  // Tenant Isolation: only return projects belonging strictly to actor's organization
+  let list = db.projects.filter(p => p.orgId === actor.orgId);
 
   if (archived === 'true') {
     list = list.filter(p => p.status === 'Diarsipkan');
@@ -38,15 +41,18 @@ projectsRoute.get('/projects', (c) => {
 // GET /api/projects/:id
 projectsRoute.get('/projects/:id', (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   const id = c.req.param('id');
-  const project = db.projects.find(p => p.id === id && (!p.orgId || p.orgId === actor.orgId));
+  const project = db.projects.find(p => p.id === id && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }
 
-  const actions = db.actions.filter(a => a.projectId === id && (!a.orgId || a.orgId === actor.orgId));
-  const invoices = db.invoices.filter(i => i.projectId === id && (!i.orgId || i.orgId === actor.orgId));
-  const documents = db.documents.filter(d => d.projectId === id && (!d.orgId || d.orgId === actor.orgId));
+  const actions = db.actions.filter(a => a.projectId === id && a.orgId === actor.orgId);
+  const invoices = db.invoices.filter(i => i.projectId === id && i.orgId === actor.orgId);
+  const documents = db.documents.filter(d => d.projectId === id && d.orgId === actor.orgId);
 
   return c.json({
     success: true,
@@ -62,6 +68,9 @@ projectsRoute.get('/projects/:id', (c) => {
 // POST /api/projects
 projectsRoute.post('/projects', async (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   if (!AuthService.canWrite(actor.role)) {
     return c.json({success: false, error: 'Hak akses tidak mencukupi untuk membuat proyek.'}, 403);
   }
@@ -75,7 +84,7 @@ projectsRoute.post('/projects', async (c) => {
   const owner = body.owner || actor.fullName;
 
   // Cek duplikasi kode proyek pada organisasi ini
-  if (db.projects.some(p => (!p.orgId || p.orgId === actor.orgId) && p.code.toLowerCase() === code.trim().toLowerCase())) {
+  if (db.projects.some(p => p.orgId === actor.orgId && p.code.toLowerCase() === code.trim().toLowerCase())) {
     return c.json({success: false, error: 'Kode proyek sudah digunakan pada organisasi ini.'}, 409);
   }
 
@@ -102,12 +111,15 @@ projectsRoute.post('/projects', async (c) => {
 // PATCH /api/projects/:id/status
 projectsRoute.patch('/projects/:id/status', async (c) => {
   const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
   if (!AuthService.canManageCommercial(actor.role)) {
     return c.json({success: false, error: 'Hanya Commercial / Owner yang dapat mengubah status proyek.'}, 403);
   }
 
   const id = c.req.param('id');
-  const project = db.projects.find(p => p.id === id && (!p.orgId || p.orgId === actor.orgId));
+  const project = db.projects.find(p => p.id === id && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }

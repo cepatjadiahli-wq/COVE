@@ -1,6 +1,7 @@
 // ============================================================================
-// COVE Frontend — API Client (Gate P0-A)
-// Attaches Bearer token to all requests; removes prototype endpoints.
+// COVE Frontend — API Client (Gate P0-A.3)
+// Attaches Bearer token and x-organization-id header to all requests.
+// Supports multi-tenant organization switching.
 // ============================================================================
 
 import {getAuthToken} from './supabase';
@@ -14,19 +15,46 @@ export interface ApiResponse<T> {
   code?: string;
 }
 
+let currentOrganizationId: string | null = null;
+
+export function setActiveOrganizationId(orgId: string | null) {
+  currentOrganizationId = orgId;
+  if (typeof window !== 'undefined') {
+    if (orgId) {
+      localStorage.setItem('cove_active_org_id', orgId);
+    } else {
+      localStorage.removeItem('cove_active_org_id');
+    }
+  }
+}
+
+export function getActiveOrganizationId(): string | null {
+  if (currentOrganizationId) return currentOrganizationId;
+  if (typeof window !== 'undefined') {
+    return localStorage.getItem('cove_active_org_id');
+  }
+  return null;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${path}`;
   const token = await getAuthToken();
+  const activeOrgId = getActiveOrganizationId();
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(activeOrgId ? { 'x-organization-id': activeOrgId } : {}),
     ...((options.headers as Record<string, string>) || {}),
   };
 
   const res = await fetch(url, { ...options, headers });
   const json = (await res.json().catch(() => ({}))) as Record<string, any>;
   if (!res.ok) {
-    throw new Error(json.error || `HTTP error ${res.status}`);
+    const error: any = new Error(json.error || `HTTP error ${res.status}`);
+    error.code = json.code;
+    error.status = res.status;
+    throw error;
   }
   return (json.data !== undefined ? json.data : json) as T;
 }
@@ -35,10 +63,13 @@ export const api = {
   // Health
   getHealth: () => request<{ status: string; service: string; version: string; uptime: number }>('/health'),
 
-  // Auth & Session
+  // Auth & Session & Tenants
   getMe: () => request<any>('/auth/me'),
+  getTenantOptions: () => request<{ currentOrgId: string | null; options: any[] }>('/auth/tenant-options'),
   createOrganization: (data: { legalName: string; displayName?: string }) =>
     request<any>('/organizations', { method: 'POST', body: JSON.stringify(data) }),
+  updateOrganization: (orgId: string, data: { legalName?: string; displayName?: string }) =>
+    request<any>(`/organizations/${orgId}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
   // Projects
   getProjects: (archived = false) => request<any[]>(`/projects?archived=${archived}`),

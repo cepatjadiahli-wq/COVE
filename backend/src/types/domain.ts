@@ -117,6 +117,7 @@ export interface SupportTicketEntity {
 
 export interface FeatureRequestEntity {
   id: string;
+  orgId?: string | null;
   title: string;
   problem: string;
   module: string;
@@ -166,11 +167,51 @@ export interface PlanEntity {
   maxUsers: number;
 }
 
+export type SubscriptionStatus =
+  | 'INACTIVE'
+  | 'PENDING'
+  | 'ACTIVE'
+  | 'PAST_DUE'
+  | 'CANCELLED'
+  | 'CANCELED'
+  | 'EXPIRED';
+
+export interface TenantSubscriptionEntity {
+  id: string;
+  organizationId: string;
+  planId: string;
+  plan?: string;
+  planName?: string;
+  status: SubscriptionStatus;
+  currentPeriodStart?: string;
+  currentPeriodEnd?: string;
+  quotaUsed?: number;
+  quotaTotal?: number;
+  amount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CheckoutSessionEntity {
+  id: string;
+  organizationId: string;
+  provider: string;
+  providerReference: string;
+  providerCheckoutId?: string | null;
+  status: 'PENDING' | 'PAID' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+  plan: string;
+  amount: number;
+  currency: string;
+  paymentUrl?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface SubscriptionEntity {
   id: string;
   planId: string;
   planName: string;
-  status: 'ACTIVE' | 'PAST_DUE' | 'CANCELLED' | 'EXPIRED';
+  status: 'ACTIVE' | 'PAST_DUE' | 'CANCELLED' | 'CANCELED' | 'EXPIRED' | 'INACTIVE' | 'PENDING' | 'NONE';
   quotaUsed: number;
   quotaTotal: number;
   periodStart: string;

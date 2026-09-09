@@ -1,6 +1,6 @@
 // ============================================================================
-// COVE Backend — Commercial Reports API Routes (Gate P0-A)
-// Enforces request-scoped actor, tenant org isolation, and pure RBAC checks.
+// COVE Backend — Commercial Reports API Routes (Gate P0-A.3)
+// Enforces request-scoped actor, fail-closed tenant org isolation, and RBAC checks.
 // ============================================================================
 
 import {Hono} from 'hono';
@@ -16,7 +16,10 @@ reportsRoute.use('/reports/*', requireAuth);
 // GET /api/reports/portfolio
 reportsRoute.get('/reports/portfolio', (c) => {
   const actor = c.get('actor');
-  const active = db.projects.filter(p => (!p.orgId || p.orgId === actor.orgId) && p.status === 'Aktif');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
+  const active = db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
   const values = LedgerService.aggregateStages(active);
   const metrics = LedgerService.calculateMetrics(values);
 
@@ -50,7 +53,10 @@ reportsRoute.get('/reports/portfolio', (c) => {
 // GET /api/reports/gaps
 reportsRoute.get('/reports/gaps', (c) => {
   const actor = c.get('actor');
-  const active = db.projects.filter(p => (!p.orgId || p.orgId === actor.orgId) && p.status === 'Aktif');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
+  const active = db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
   const values = LedgerService.aggregateStages(active);
   const metrics = LedgerService.calculateMetrics(values);
 
@@ -75,11 +81,10 @@ reportsRoute.get('/reports/gaps', (c) => {
 // GET /api/reports/aging
 reportsRoute.get('/reports/aging', (c) => {
   const actor = c.get('actor');
-  const invoices = db.invoices.filter(i => {
-    if (i.orgId) return i.orgId === actor.orgId;
-    const proj = db.projects.find(p => p.id === i.projectId);
-    return !proj || !proj.orgId || proj.orgId === actor.orgId;
-  });
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
+  const invoices = db.invoices.filter(i => i.orgId === actor.orgId);
 
   let notDue = 0;
   let overdue1to30 = 0;
@@ -116,11 +121,19 @@ reportsRoute.get('/reports/aging', (c) => {
 
 // GET /api/reports/forecast
 reportsRoute.get('/reports/forecast', (c) => {
-  const incoming = [
-    {date: '2026-09-15', project: 'Gedung Meridian', invoice: 'INV/MRD/2026/004', amount: 70000000, confidence: 'Tinggi'},
-    {date: '2026-09-19', project: 'Logistik Cakrawala', invoice: 'INV/CKR/2026/007', amount: 200000000, confidence: 'Sedang'},
-    {date: '2026-09-24', project: 'MEP Rumah Sakit Aruna', invoice: 'INV/ARN/2026/004', amount: 100000000, confidence: 'Tinggi'}
-  ];
+  const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
+  // Schedule incoming forecast derived from active projects' invoices
+  const invoices = db.invoices.filter(i => i.orgId === actor.orgId);
+  const incoming = invoices.slice(0, 5).map(inv => ({
+    date: inv.due,
+    project: db.projects.find(p => p.id === inv.projectId)?.name || 'Proyek',
+    invoice: inv.number,
+    amount: inv.principal - inv.paid,
+    confidence: 'Tinggi'
+  }));
 
   const totalForecast = incoming.reduce((sum, item) => sum + item.amount, 0);
 
