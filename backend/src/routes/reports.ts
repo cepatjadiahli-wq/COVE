@@ -8,18 +8,20 @@ import {db} from '../db/store.js';
 import {LedgerService} from '../services/ledger.service.js';
 import {ActionService} from '../services/action.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
+import {getProjectRepository} from '../repositories/project.repository.js';
 
 export const reportsRoute = new Hono();
 
 reportsRoute.use('/reports/*', requireAuth);
 
 // GET /api/reports/portfolio
-reportsRoute.get('/reports/portfolio', (c) => {
+reportsRoute.get('/reports/portfolio', async (c) => {
   const actor = c.get('actor');
   if (!actor.orgId) {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
-  const active = db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
+  const repoProjects = await getProjectRepository().getProjectsByOrgId(actor.orgId, { archived: false }).catch(() => []);
+  const active = repoProjects.length > 0 ? repoProjects : db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
   const values = LedgerService.aggregateStages(active);
   const metrics = LedgerService.calculateMetrics(values);
 
@@ -51,12 +53,13 @@ reportsRoute.get('/reports/portfolio', (c) => {
 });
 
 // GET /api/reports/gaps
-reportsRoute.get('/reports/gaps', (c) => {
+reportsRoute.get('/reports/gaps', async (c) => {
   const actor = c.get('actor');
   if (!actor.orgId) {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
-  const active = db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
+  const repoProjects = await getProjectRepository().getProjectsByOrgId(actor.orgId, { archived: false }).catch(() => []);
+  const active = repoProjects.length > 0 ? repoProjects : db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
   const values = LedgerService.aggregateStages(active);
   const metrics = LedgerService.calculateMetrics(values);
 

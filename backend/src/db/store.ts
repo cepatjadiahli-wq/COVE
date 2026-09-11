@@ -26,7 +26,7 @@ const __dirname = path.dirname(__filename);
 const DB_FILE = path.resolve(__dirname, '../../data/cove_db.json');
 
 // Seed Initial Data
-const initialProjects: ProjectEntity[] = [
+export const initialProjects: ProjectEntity[] = [
   {
     id: 'p1',
     orgId: 'org-001',

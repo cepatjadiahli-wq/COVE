@@ -8,19 +8,20 @@ import {db} from '../db/store.js';
 import {LedgerService} from '../services/ledger.service.js';
 import {AuthService} from '../services/auth.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
+import {getProjectRepository} from '../repositories/project.repository.js';
 
 export const ledgerRoute = new Hono();
 
 ledgerRoute.use('/projects/*', requireAuth);
 
 // GET /api/projects/:id/ledger
-ledgerRoute.get('/projects/:id/ledger', (c) => {
+ledgerRoute.get('/projects/:id/ledger', async (c) => {
   const actor = c.get('actor');
   if (!actor.orgId) {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
   const id = c.req.param('id');
-  const project = db.projects.find(p => p.id === id && p.orgId === actor.orgId);
+  const project = (await getProjectRepository().getProjectById(actor.orgId, id)) || db.projects.find(p => p.id === id && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }
@@ -50,7 +51,7 @@ ledgerRoute.post('/projects/:id/ledger/entry', async (c) => {
   }
 
   const id = c.req.param('id');
-  const project = db.projects.find(p => p.id === id && p.orgId === actor.orgId);
+  const project = (await getProjectRepository().getProjectById(actor.orgId, id)) || db.projects.find(p => p.id === id && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }

@@ -8,6 +8,7 @@ import {db} from '../db/store.js';
 import {ActionService} from '../services/action.service.js';
 import {AuthService} from '../services/auth.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
+import {getProjectRepository} from '../repositories/project.repository.js';
 
 export const actionsRoute = new Hono();
 
@@ -52,7 +53,7 @@ actionsRoute.post('/actions', async (c) => {
   }
 
   // Ensure project exists and belongs strictly to actor's organization
-  const project = db.projects.find(p => p.id === body.projectId && p.orgId === actor.orgId);
+  const project = (await getProjectRepository().getProjectById(actor.orgId, body.projectId)) || db.projects.find(p => p.id === body.projectId && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan pada organisasi ini.'}, 404);
   }

@@ -9,6 +9,7 @@ import {ReceiptService} from '../services/receipt.service.js';
 import {ActionService} from '../services/action.service.js';
 import {AuthService} from '../services/auth.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
+import {getProjectRepository} from '../repositories/project.repository.js';
 import type {InvoiceEntity} from '../types/domain.js';
 
 export const invoicesRoute = new Hono();
@@ -70,7 +71,7 @@ invoicesRoute.post('/invoices', async (c) => {
   }
 
   // Ensure project belongs to actor's organization
-  const project = db.projects.find(p => p.id === projectId && p.orgId === actor.orgId);
+  const project = (await getProjectRepository().getProjectById(actor.orgId, projectId)) || db.projects.find(p => p.id === projectId && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan pada organisasi ini.'}, 404);
   }
@@ -126,7 +127,7 @@ invoicesRoute.post('/invoices/receipts', async (c) => {
   const amount = Number(body.amount ?? body.receivedAmount);
 
   // Verify project ownership
-  const project = db.projects.find(p => p.id === body.projectId && p.orgId === actor.orgId);
+  const project = (await getProjectRepository().getProjectById(actor.orgId, body.projectId)) || db.projects.find(p => p.id === body.projectId && p.orgId === actor.orgId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan pada organisasi ini.'}, 404);
   }
