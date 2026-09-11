@@ -9,10 +9,41 @@ import {LedgerService} from '../services/ledger.service.js';
 import {ActionService} from '../services/action.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
 import {getProjectRepository} from '../repositories/project.repository.js';
+import {getLedgerRepository} from '../repositories/ledger.repository.js';
+import type {StageValues} from '../types/domain.js';
 
 export const reportsRoute = new Hono();
 
 reportsRoute.use('/reports/*', requireAuth);
+
+async function enrichProjectsWithLedger(orgId: string, projects: any[]) {
+  const ledgerRepo = getLedgerRepository();
+  return Promise.all(
+    projects.map(async p => {
+      try {
+        const totals = await ledgerRepo.getLedgerTotals(orgId, p.id);
+        const w = Number(totals.workPerformed);
+        const m = Number(totals.measured);
+        const c = Number(totals.claimed);
+        const s = Number(totals.certified);
+        if (w > 0 || m > 0 || c > 0 || s > 0) {
+          return {
+            ...p,
+            values: [
+              w,
+              m,
+              c,
+              s,
+              p.values[4] || 0,
+              p.values[5] || 0
+            ] as StageValues
+          };
+        }
+      } catch {}
+      return p;
+    })
+  );
+}
 
 // GET /api/reports/portfolio
 reportsRoute.get('/reports/portfolio', async (c) => {
@@ -21,7 +52,8 @@ reportsRoute.get('/reports/portfolio', async (c) => {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
   const repoProjects = await getProjectRepository().getProjectsByOrgId(actor.orgId, { archived: false }).catch(() => []);
-  const active = repoProjects.length > 0 ? repoProjects : db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
+  const rawActive = repoProjects.length > 0 ? repoProjects : db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
+  const active = await enrichProjectsWithLedger(actor.orgId, rawActive);
   const values = LedgerService.aggregateStages(active);
   const metrics = LedgerService.calculateMetrics(values);
 
@@ -59,7 +91,8 @@ reportsRoute.get('/reports/gaps', async (c) => {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
   const repoProjects = await getProjectRepository().getProjectsByOrgId(actor.orgId, { archived: false }).catch(() => []);
-  const active = repoProjects.length > 0 ? repoProjects : db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
+  const rawActive = repoProjects.length > 0 ? repoProjects : db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif');
+  const active = await enrichProjectsWithLedger(actor.orgId, rawActive);
   const values = LedgerService.aggregateStages(active);
   const metrics = LedgerService.calculateMetrics(values);
 
