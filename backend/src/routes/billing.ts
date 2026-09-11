@@ -10,6 +10,7 @@ import {AuthService} from '../services/auth.service.js';
 import {MayarService} from '../services/mayar.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
 import {getIdentityRepository} from '../repositories/identity.repository.js';
+import {getProjectRepository} from '../repositories/project.repository.js';
 import type {CheckoutSessionEntity} from '../types/domain.js';
 
 export const billingRoute = new Hono();
@@ -35,7 +36,8 @@ billingRoute.get('/billing', async (c) => {
 
   const identityRepo = getIdentityRepository();
   const sub = await identityRepo.getSubscriptionByOrgId(actor.orgId);
-  const activeCount = db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif').length;
+  const repoProjects = await getProjectRepository().getProjectsByOrgId(actor.orgId, { archived: false }).catch(() => []);
+  const activeCount = repoProjects.length || db.projects.filter(p => p.orgId === actor.orgId && p.status === 'Aktif').length;
 
   const quotaTotal = sub?.quotaTotal || (sub?.plan === 'scale' ? 25 : sub?.plan === 'pilot' ? 10 : sub?.plan === 'core' ? 5 : 3);
   

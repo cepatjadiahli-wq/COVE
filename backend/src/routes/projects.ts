@@ -1,13 +1,14 @@
 // ============================================================================
-// COVE Backend — Projects API Routes (Gate P0-A)
-// Enforces request-scoped actor, tenant org isolation, and pure RBAC checks.
+// COVE Backend — Projects API Routes (Gate P0-B.1)
+// Enforces request-scoped actor, tenant org isolation, and canonical PostgreSQL persistence.
+// Acuan: COVE_PRD_v2.0_Product_End_State.md §7, COVE_ERD_v2.0_Logical_Data_Model.md §1
 // ============================================================================
 
 import {Hono} from 'hono';
 import {db} from '../db/store.js';
 import {AuthService} from '../services/auth.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
-import type {ProjectEntity} from '../types/domain.js';
+import {getProjectRepository} from '../repositories/project.repository.js';
 
 export const projectsRoute = new Hono();
 
@@ -16,40 +17,36 @@ projectsRoute.use('/projects', requireAuth);
 projectsRoute.use('/projects/*', requireAuth);
 
 // GET /api/projects
-projectsRoute.get('/projects', (c) => {
+projectsRoute.get('/projects', async (c) => {
   const actor = c.get('actor');
   if (!actor.orgId) {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
   const status = c.req.query('status');
-  const archived = c.req.query('archived');
+  const archivedParam = c.req.query('archived');
+  const archived = archivedParam === 'true' ? true : archivedParam === 'false' ? false : undefined;
 
-  // Tenant Isolation: only return projects belonging strictly to actor's organization
-  let list = db.projects.filter(p => p.orgId === actor.orgId);
-
-  if (archived === 'true') {
-    list = list.filter(p => p.status === 'Diarsipkan');
-  } else if (archived === 'false') {
-    list = list.filter(p => p.status === 'Aktif');
-  } else if (status && status !== 'Semua status') {
-    list = list.filter(p => p.status.toLowerCase() === status.toLowerCase());
-  }
+  // Canonical PostgreSQL Project Authority with strict tenant isolation
+  const repo = getProjectRepository();
+  const list = await repo.getProjectsByOrgId(actor.orgId, { status, archived });
 
   return c.json({success: true, data: list});
 });
 
 // GET /api/projects/:id
-projectsRoute.get('/projects/:id', (c) => {
+projectsRoute.get('/projects/:id', async (c) => {
   const actor = c.get('actor');
   if (!actor.orgId) {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
   const id = c.req.param('id');
-  const project = db.projects.find(p => p.id === id && p.orgId === actor.orgId);
+  const repo = getProjectRepository();
+  const project = await repo.getProjectById(actor.orgId, id);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }
 
+  // Downstream unmigrated sub-resources still isolated by actor.orgId
   const actions = db.actions.filter(a => a.projectId === id && a.orgId === actor.orgId);
   const invoices = db.invoices.filter(i => i.projectId === id && i.orgId === actor.orgId);
   const documents = db.documents.filter(d => d.projectId === id && d.orgId === actor.orgId);
@@ -76,36 +73,45 @@ projectsRoute.post('/projects', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
-  const name = body.name || 'Proyek Baru';
-  const code = body.code || `COV-00${db.projects.length + 1}`;
+  const name = (body.name || 'Proyek Baru').trim();
   const contract = Number(body.contract) || 10000000000;
-  const customer = body.customer || 'Pemberi Kerja';
-  const location = body.location || 'Indonesia';
+  const customer = (body.customer || 'Pemberi Kerja').trim();
+  const location = (body.location || 'Indonesia').trim();
   const owner = body.owner || actor.fullName;
 
+  const repo = getProjectRepository();
+  const code = (body.code || `COV-${Date.now().toString().slice(-4)}`).trim();
+
   // Cek duplikasi kode proyek pada organisasi ini
-  if (db.projects.some(p => p.orgId === actor.orgId && p.code.toLowerCase() === code.trim().toLowerCase())) {
+  const isTaken = await repo.isProjectCodeTaken(actor.orgId, code);
+  if (isTaken) {
     return c.json({success: false, error: 'Kode proyek sudah digunakan pada organisasi ini.'}, 409);
   }
 
-  const newProject: ProjectEntity = {
-    id: 'p' + (db.projects.length + 1),
-    orgId: actor.orgId,
-    code: code.trim(),
-    name: name.trim(),
-    customer: customer.trim(),
-    location: location.trim(),
-    owner,
-    status: 'Aktif',
-    contract,
-    values: Array.isArray(body.values) && body.values.length === 6 ? body.values : [0, 0, 0, 0, 0, 0],
-    updated: '8 Sep 2026, 09.55'
-  };
+  try {
+    const newProject = await repo.createProject({
+      orgId: actor.orgId,
+      code,
+      name,
+      customer,
+      location,
+      owner,
+      status: 'Aktif',
+      contract,
+      values: Array.isArray(body.values) && body.values.length === 6 ? body.values : [0, 0, 0, 0, 0, 0]
+    });
 
-  db.projects.push(newProject);
-  db.save();
-
-  return c.json({success: true, data: newProject}, 201);
+    return c.json({success: true, data: newProject}, 201);
+  } catch (err: any) {
+    if (err.code === '23503') {
+      // Foreign key violation: org does not exist in database
+      return c.json({success: false, error: 'Organisasi tidak valid atau tidak terdaftar.'}, 400);
+    }
+    if (err.code === '23505') {
+      return c.json({success: false, error: 'Kode proyek sudah digunakan pada organisasi ini.'}, 409);
+    }
+    throw err;
+  }
 });
 
 // PATCH /api/projects/:id/status
@@ -119,19 +125,20 @@ projectsRoute.patch('/projects/:id/status', async (c) => {
   }
 
   const id = c.req.param('id');
-  const project = db.projects.find(p => p.id === id && p.orgId === actor.orgId);
+  const repo = getProjectRepository();
+  const project = await repo.getProjectById(actor.orgId, id);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }
 
   const body = await c.req.json().catch(() => ({}));
+  let newStatus: 'Aktif' | 'Diarsipkan';
   if (body.status && (body.status === 'Aktif' || body.status === 'Diarsipkan')) {
-    project.status = body.status;
+    newStatus = body.status;
   } else {
-    project.status = project.status === 'Aktif' ? 'Diarsipkan' : 'Aktif';
+    newStatus = project.status === 'Aktif' ? 'Diarsipkan' : 'Aktif';
   }
-  project.updated = '8 Sep 2026, 10.00';
-  db.save();
 
-  return c.json({success: true, data: project});
+  const updated = await repo.updateProjectStatus(actor.orgId, id, newStatus);
+  return c.json({success: true, data: updated});
 });

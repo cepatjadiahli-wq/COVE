@@ -20,7 +20,8 @@ export const CANONICAL_MIGRATION_ORDER = [
   '003b_platform_admin_foundation.sql',
   '004_extended_growth_feedback_schema.sql',
   '005_identity_access_hardening.sql',
-  '006_tenant_entitlement_and_profile_bootstrap.sql'
+  '006_tenant_entitlement_and_profile_bootstrap.sql',
+  '007_project_canonical_schema.sql'
 ] as const;
 
 export function getDiscoveredMigrations(): string[] {
