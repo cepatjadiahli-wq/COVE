@@ -8,6 +8,15 @@
 import pg from 'pg';
 import {pgPool} from '../db/store.js';
 import {getProjectRepository} from './project.repository.js';
+import {
+  type MoneyString,
+  type MoneyInput,
+  parseMoney,
+  addMoney,
+  subtractMoney,
+  compareMoney,
+  isPositiveMoney
+} from '../utils/money.js';
 
 export interface WorkProgressLineRecord {
   id: string;
@@ -17,9 +26,9 @@ export interface WorkProgressLineRecord {
   description: string;
   quantity: number;
   unit: string;
-  principalAmount: number;
-  allocatedToMeasurement: number;
-  availableAmount: number;
+  principalAmount: MoneyString;
+  allocatedToMeasurement: MoneyString;
+  availableAmount: MoneyString;
   progressDate: string;
   evidenceStatus: string;
   status: 'ACTIVE' | 'CANCELLED' | 'ARCHIVED';
@@ -31,7 +40,7 @@ export interface MeasurementAllocationRecord {
   id: string;
   measurementId: string;
   workProgressLineId: string;
-  allocatedAmount: number;
+  allocatedAmount: MoneyString;
   createdAt: string;
 }
 
@@ -43,9 +52,9 @@ export interface MeasurementRecord {
   measurementDate: string;
   description: string;
   status: 'DRAFT' | 'SUBMITTED' | 'VERIFIED';
-  totalAllocatedAmount: number;
-  allocatedToClaim: number;
-  availableAmount: number;
+  totalAllocatedAmount: MoneyString;
+  allocatedToClaim: MoneyString;
+  availableAmount: MoneyString;
   createdAt: string;
   updatedAt: string;
   allocations?: MeasurementAllocationRecord[];
@@ -55,7 +64,7 @@ export interface ClaimAllocationRecord {
   id: string;
   claimId: string;
   measurementId: string;
-  allocatedAmount: number;
+  allocatedAmount: MoneyString;
   createdAt: string;
 }
 
@@ -68,9 +77,9 @@ export interface ClaimRecord {
   readinessStatus: 'INCOMPLETE' | 'COMPLETE';
   status: 'DRAFT' | 'SUBMITTED' | 'UNDER_REVIEW' | 'APPROVED';
   description: string;
-  totalAllocatedAmount: number;
-  allocatedToCertification: number;
-  availableAmount: number;
+  totalAllocatedAmount: MoneyString;
+  allocatedToCertification: MoneyString;
+  availableAmount: MoneyString;
   createdAt: string;
   updatedAt: string;
   allocations?: ClaimAllocationRecord[];
@@ -80,7 +89,7 @@ export interface CertificationAllocationRecord {
   id: string;
   certificateId: string;
   claimId: string;
-  allocatedAmount: number;
+  allocatedAmount: MoneyString;
   createdAt: string;
 }
 
@@ -92,42 +101,42 @@ export interface CertificateRecord {
   certifiedAt: string;
   status: 'DRAFT' | 'CERTIFIED' | 'DISPUTED';
   description: string;
-  totalAllocatedAmount: number;
+  totalAllocatedAmount: MoneyString;
   createdAt: string;
   updatedAt: string;
   allocations?: CertificationAllocationRecord[];
 }
 
 export interface LedgerTotals {
-  workPerformed: number;
-  measured: number;
-  claimed: number;
-  certified: number;
-  g1: number;
-  g2: number;
-  g3: number;
+  workPerformed: MoneyString;
+  measured: MoneyString;
+  claimed: MoneyString;
+  certified: MoneyString;
+  g1: MoneyString;
+  g2: MoneyString;
+  g3: MoneyString;
 }
 
 export interface LineageEntry {
   certificateId: string;
   certificateNumber: string;
-  certifiedAmount: number;
+  certifiedAmount: MoneyString;
   claimId: string;
   claimNumber: string;
-  claimedAmount: number;
+  claimedAmount: MoneyString;
   measurementId: string;
   measurementNumber: string;
-  measuredAmount: number;
+  measuredAmount: MoneyString;
   workProgressLineId: string;
   progressDescription: string;
-  progressAmount: number;
+  progressAmount: MoneyString;
 }
 
 export interface CreateWorkProgressInput {
   orgId: string;
   projectId: string;
   description: string;
-  principalAmount: number;
+  principalAmount: MoneyInput;
   quantity?: number;
   unit?: string;
   progressDate?: string;
@@ -143,7 +152,7 @@ export interface CreateMeasurementInput {
   description?: string;
   allocations: Array<{
     workProgressLineId: string;
-    amount: number;
+    amount: MoneyInput;
   }>;
 }
 
@@ -155,7 +164,7 @@ export interface CreateClaimInput {
   description?: string;
   allocations: Array<{
     measurementId: string;
-    amount: number;
+    amount: MoneyInput;
   }>;
 }
 
@@ -167,7 +176,7 @@ export interface CreateCertificateInput {
   description?: string;
   allocations: Array<{
     claimId: string;
-    amount: number;
+    amount: MoneyInput;
   }>;
 }
 
@@ -254,7 +263,8 @@ export class PostgresLedgerRepository implements ILedgerRepository {
   }
 
   public async createWorkProgressLine(input: CreateWorkProgressInput): Promise<WorkProgressLineRecord> {
-    if (input.principalAmount <= 0) {
+    const parsedPrincipal = parseMoney(input.principalAmount);
+    if (!isPositiveMoney(parsedPrincipal)) {
       const err: any = new Error('Nilai progres harus lebih dari nol.');
       err.statusCode = 400;
       throw err;
@@ -306,13 +316,14 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         input.description.trim(),
         input.quantity ?? 1,
         input.unit || 'LS',
-        input.principalAmount,
+        parsedPrincipal,
         input.progressDate || new Date().toISOString().split('T')[0],
         input.evidenceStatus || 'VERIFIED'
       ]);
 
       await client.query('COMMIT');
       const r = res.rows[0];
+      const principal = parseMoney(r.principal_amount);
       return {
         id: r.id,
         orgId: r.org_id,
@@ -321,9 +332,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         description: r.description,
         quantity: Number(r.quantity),
         unit: r.unit,
-        principalAmount: Number(r.principal_amount),
-        allocatedToMeasurement: 0,
-        availableAmount: Number(r.principal_amount),
+        principalAmount: principal,
+        allocatedToMeasurement: '0.00',
+        availableAmount: principal,
         progressDate: r.progress_date,
         evidenceStatus: r.evidence_status,
         status: r.status,
@@ -351,8 +362,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     `;
     const res = await this.pool.query(query, [orgId, projectId]);
     return res.rows.map(r => {
-      const principal = Number(r.principal_amount);
-      const allocated = Number(r.allocated_to_measurement);
+      const principal = parseMoney(r.principal_amount);
+      const allocated = parseMoney(r.allocated_to_measurement);
+      const available = compareMoney(principal, allocated) > 0 ? subtractMoney(principal, allocated) : '0.00';
       return {
         id: r.id,
         orgId: r.org_id,
@@ -363,7 +375,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         unit: r.unit,
         principalAmount: principal,
         allocatedToMeasurement: allocated,
-        availableAmount: Math.max(0, principal - allocated),
+        availableAmount: available,
         progressDate: r.progress_date,
         evidenceStatus: r.evidence_status,
         status: r.status,
@@ -386,8 +398,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     const res = await this.pool.query(query, [orgId, projectId, id]);
     if (res.rows.length === 0) return null;
     const r = res.rows[0];
-    const principal = Number(r.principal_amount);
-    const allocated = Number(r.allocated_to_measurement);
+    const principal = parseMoney(r.principal_amount);
+    const allocated = parseMoney(r.allocated_to_measurement);
+    const available = compareMoney(principal, allocated) > 0 ? subtractMoney(principal, allocated) : '0.00';
     return {
       id: r.id,
       orgId: r.org_id,
@@ -398,7 +411,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       unit: r.unit,
       principalAmount: principal,
       allocatedToMeasurement: allocated,
-      availableAmount: Math.max(0, principal - allocated),
+      availableAmount: available,
       progressDate: r.progress_date,
       evidenceStatus: r.evidence_status,
       status: r.status,
@@ -452,7 +465,8 @@ export class PostgresLedgerRepository implements ILedgerRepository {
 
       // Concurrency protection: Lock each work_progress_line FOR UPDATE and validate capacity
       for (const alloc of input.allocations) {
-        if (alloc.amount <= 0) {
+        const parsedAllocAmount = parseMoney(alloc.amount);
+        if (!isPositiveMoney(parsedAllocAmount)) {
           const err: any = new Error('Nilai alokasi harus lebih dari nol.');
           err.statusCode = 400;
           throw err;
@@ -476,19 +490,19 @@ export class PostgresLedgerRepository implements ILedgerRepository {
           throw err;
         }
 
-        const principal = Number(lineRes.rows[0].principal_amount);
+        const principal = parseMoney(lineRes.rows[0].principal_amount);
         const existingAllocRes = await client.query(
           `SELECT COALESCE(SUM(allocated_amount), 0) AS total_allocated
            FROM public.measurement_allocations
            WHERE work_progress_line_id = $1`,
           [alloc.workProgressLineId]
         );
-        const existingAlloc = Number(existingAllocRes.rows[0].total_allocated);
-        const available = principal - existingAlloc;
+        const existingAlloc = parseMoney(existingAllocRes.rows[0].total_allocated);
+        const available = compareMoney(principal, existingAlloc) > 0 ? subtractMoney(principal, existingAlloc) : '0.00';
 
-        if (alloc.amount > available) {
+        if (compareMoney(parsedAllocAmount, available) > 0) {
           const err: any = new Error(
-            `Alokasi pengukuran (${alloc.amount}) melebihi sisa progres yang tersedia (${available}).`
+            `Alokasi pengukuran (${parsedAllocAmount}) melebihi sisa progres yang tersedia (${available}).`
           );
           err.statusCode = 400;
           throw err;
@@ -520,7 +534,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
 
       // Insert allocations
       const allocationRecords: MeasurementAllocationRecord[] = [];
+      let totalAllocatedMinor = '0.00';
       for (const alloc of input.allocations) {
+        const parsedAmount = parseMoney(alloc.amount);
         const allocRes = await client.query(
           `INSERT INTO public.measurement_allocations (
             work_progress_line_id,
@@ -529,21 +545,22 @@ export class PostgresLedgerRepository implements ILedgerRepository {
             created_at
           ) VALUES ($1, $2, $3, NOW())
           RETURNING *`,
-          [alloc.workProgressLineId, measurement.id, alloc.amount]
+          [alloc.workProgressLineId, measurement.id, parsedAmount]
         );
         const a = allocRes.rows[0];
+        const recordAllocated = parseMoney(a.allocated_amount);
+        totalAllocatedMinor = addMoney(totalAllocatedMinor, recordAllocated);
         allocationRecords.push({
           id: a.id,
           measurementId: a.measurement_id,
           workProgressLineId: a.work_progress_line_id,
-          allocatedAmount: Number(a.allocated_amount),
+          allocatedAmount: recordAllocated,
           createdAt: new Date(a.created_at).toISOString()
         });
       }
 
       await client.query('COMMIT');
 
-      const totalAllocated = allocationRecords.reduce((sum, a) => sum + a.allocatedAmount, 0);
       return {
         id: measurement.id,
         orgId: measurement.org_id,
@@ -552,9 +569,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         measurementDate: measurement.measurement_date,
         description: measurement.description,
         status: measurement.status,
-        totalAllocatedAmount: totalAllocated,
-        allocatedToClaim: 0,
-        availableAmount: totalAllocated,
+        totalAllocatedAmount: totalAllocatedMinor,
+        allocatedToClaim: '0.00',
+        availableAmount: totalAllocatedMinor,
         createdAt: new Date(measurement.created_at).toISOString(),
         updatedAt: new Date(measurement.updated_at).toISOString(),
         allocations: allocationRecords
@@ -585,8 +602,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     `;
     const res = await this.pool.query(query, [orgId, projectId]);
     return res.rows.map(r => {
-      const total = Number(r.total_allocated);
-      const claimed = Number(r.allocated_to_claim);
+      const total = parseMoney(r.total_allocated);
+      const claimed = parseMoney(r.allocated_to_claim);
+      const available = compareMoney(total, claimed) > 0 ? subtractMoney(total, claimed) : '0.00';
       return {
         id: r.id,
         orgId: r.org_id,
@@ -597,7 +615,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         status: r.status,
         totalAllocatedAmount: total,
         allocatedToClaim: claimed,
-        availableAmount: Math.max(0, total - claimed),
+        availableAmount: available,
         createdAt: new Date(r.created_at).toISOString(),
         updatedAt: new Date(r.updated_at).toISOString()
       };
@@ -621,8 +639,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     const res = await this.pool.query(query, [orgId, projectId, id]);
     if (res.rows.length === 0) return null;
     const r = res.rows[0];
-    const total = Number(r.total_allocated);
-    const claimed = Number(r.allocated_to_claim);
+    const total = parseMoney(r.total_allocated);
+    const claimed = parseMoney(r.allocated_to_claim);
+    const available = compareMoney(total, claimed) > 0 ? subtractMoney(total, claimed) : '0.00';
 
     const allocRes = await this.pool.query(
       `SELECT * FROM public.measurement_allocations WHERE measurement_id = $1 ORDER BY created_at ASC`,
@@ -639,14 +658,14 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       status: r.status,
       totalAllocatedAmount: total,
       allocatedToClaim: claimed,
-      availableAmount: Math.max(0, total - claimed),
+      availableAmount: available,
       createdAt: new Date(r.created_at).toISOString(),
       updatedAt: new Date(r.updated_at).toISOString(),
       allocations: allocRes.rows.map(a => ({
         id: a.id,
         measurementId: a.measurement_id,
         workProgressLineId: a.work_progress_line_id,
-        allocatedAmount: Number(a.allocated_amount),
+        allocatedAmount: parseMoney(a.allocated_amount),
         createdAt: new Date(a.created_at).toISOString()
       }))
     };
@@ -695,7 +714,8 @@ export class PostgresLedgerRepository implements ILedgerRepository {
 
       // Concurrency protection: Lock each measurement FOR UPDATE
       for (const alloc of input.allocations) {
-        if (alloc.amount <= 0) {
+        const parsedAllocAmount = parseMoney(alloc.amount);
+        if (!isPositiveMoney(parsedAllocAmount)) {
           const err: any = new Error('Nilai alokasi harus lebih dari nol.');
           err.statusCode = 400;
           throw err;
@@ -721,7 +741,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
            WHERE measurement_id = $1`,
           [alloc.measurementId]
         );
-        const measuredTotal = Number(measTotalRes.rows[0].total_measured);
+        const measuredTotal = parseMoney(measTotalRes.rows[0].total_measured);
 
         const existingClaimRes = await client.query(
           `SELECT COALESCE(SUM(allocated_amount), 0) AS total_claimed
@@ -729,12 +749,12 @@ export class PostgresLedgerRepository implements ILedgerRepository {
            WHERE measurement_id = $1`,
           [alloc.measurementId]
         );
-        const existingClaimed = Number(existingClaimRes.rows[0].total_claimed);
-        const available = measuredTotal - existingClaimed;
+        const existingClaimed = parseMoney(existingClaimRes.rows[0].total_claimed);
+        const available = compareMoney(measuredTotal, existingClaimed) > 0 ? subtractMoney(measuredTotal, existingClaimed) : '0.00';
 
-        if (alloc.amount > available) {
+        if (compareMoney(parsedAllocAmount, available) > 0) {
           const err: any = new Error(
-            `Alokasi klaim (${alloc.amount}) melebihi sisa pengukuran yang tersedia (${available}).`
+            `Alokasi klaim (${parsedAllocAmount}) melebihi sisa pengukuran yang tersedia (${available}).`
           );
           err.statusCode = 400;
           throw err;
@@ -767,7 +787,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
 
       // Insert allocations
       const allocationRecords: ClaimAllocationRecord[] = [];
+      let totalAllocatedMinor = '0.00';
       for (const alloc of input.allocations) {
+        const parsedAmount = parseMoney(alloc.amount);
         const allocRes = await client.query(
           `INSERT INTO public.claim_allocations (
             measurement_id,
@@ -776,21 +798,22 @@ export class PostgresLedgerRepository implements ILedgerRepository {
             created_at
           ) VALUES ($1, $2, $3, NOW())
           RETURNING *`,
-          [alloc.measurementId, claim.id, alloc.amount]
+          [alloc.measurementId, claim.id, parsedAmount]
         );
         const a = allocRes.rows[0];
+        const recordAllocated = parseMoney(a.allocated_amount);
+        totalAllocatedMinor = addMoney(totalAllocatedMinor, recordAllocated);
         allocationRecords.push({
           id: a.id,
           claimId: a.claim_id,
           measurementId: a.measurement_id,
-          allocatedAmount: Number(a.allocated_amount),
+          allocatedAmount: recordAllocated,
           createdAt: new Date(a.created_at).toISOString()
         });
       }
 
       await client.query('COMMIT');
 
-      const totalAllocated = allocationRecords.reduce((sum, a) => sum + a.allocatedAmount, 0);
       return {
         id: claim.id,
         orgId: claim.org_id,
@@ -800,9 +823,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         readinessStatus: claim.readiness_status,
         status: claim.status,
         description: claim.description,
-        totalAllocatedAmount: totalAllocated,
-        allocatedToCertification: 0,
-        availableAmount: totalAllocated,
+        totalAllocatedAmount: totalAllocatedMinor,
+        allocatedToCertification: '0.00',
+        availableAmount: totalAllocatedMinor,
         createdAt: new Date(claim.created_at).toISOString(),
         updatedAt: new Date(claim.updated_at).toISOString(),
         allocations: allocationRecords
@@ -833,8 +856,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     `;
     const res = await this.pool.query(query, [orgId, projectId]);
     return res.rows.map(r => {
-      const total = Number(r.total_allocated);
-      const certified = Number(r.allocated_to_cert);
+      const total = parseMoney(r.total_allocated);
+      const certified = parseMoney(r.allocated_to_cert);
+      const available = compareMoney(total, certified) > 0 ? subtractMoney(total, certified) : '0.00';
       return {
         id: r.id,
         orgId: r.org_id,
@@ -846,7 +870,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         description: r.description || '',
         totalAllocatedAmount: total,
         allocatedToCertification: certified,
-        availableAmount: Math.max(0, total - certified),
+        availableAmount: available,
         createdAt: new Date(r.created_at).toISOString(),
         updatedAt: new Date(r.updated_at).toISOString()
       };
@@ -870,8 +894,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     const res = await this.pool.query(query, [orgId, projectId, id]);
     if (res.rows.length === 0) return null;
     const r = res.rows[0];
-    const total = Number(r.total_allocated);
-    const certified = Number(r.allocated_to_cert);
+    const total = parseMoney(r.total_allocated);
+    const certified = parseMoney(r.allocated_to_cert);
+    const available = compareMoney(total, certified) > 0 ? subtractMoney(total, certified) : '0.00';
 
     const allocRes = await this.pool.query(
       `SELECT * FROM public.claim_allocations WHERE claim_id = $1 ORDER BY created_at ASC`,
@@ -889,14 +914,14 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       description: r.description || '',
       totalAllocatedAmount: total,
       allocatedToCertification: certified,
-      availableAmount: Math.max(0, total - certified),
+      availableAmount: available,
       createdAt: new Date(r.created_at).toISOString(),
       updatedAt: new Date(r.updated_at).toISOString(),
       allocations: allocRes.rows.map(a => ({
         id: a.id,
         claimId: a.claim_id,
         measurementId: a.measurement_id,
-        allocatedAmount: Number(a.allocated_amount),
+        allocatedAmount: parseMoney(a.allocated_amount),
         createdAt: new Date(a.created_at).toISOString()
       }))
     };
@@ -945,7 +970,8 @@ export class PostgresLedgerRepository implements ILedgerRepository {
 
       // Concurrency protection: Lock each claim FOR UPDATE
       for (const alloc of input.allocations) {
-        if (alloc.amount <= 0) {
+        const parsedAllocAmount = parseMoney(alloc.amount);
+        if (!isPositiveMoney(parsedAllocAmount)) {
           const err: any = new Error('Nilai alokasi harus lebih dari nol.');
           err.statusCode = 400;
           throw err;
@@ -970,7 +996,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
            WHERE claim_id = $1`,
           [alloc.claimId]
         );
-        const claimedTotal = Number(claimTotalRes.rows[0].total_claimed);
+        const claimedTotal = parseMoney(claimTotalRes.rows[0].total_claimed);
 
         const existingCertRes = await client.query(
           `SELECT COALESCE(SUM(allocated_amount), 0) AS total_certified
@@ -978,12 +1004,12 @@ export class PostgresLedgerRepository implements ILedgerRepository {
            WHERE claim_id = $1`,
           [alloc.claimId]
         );
-        const existingCertified = Number(existingCertRes.rows[0].total_certified);
-        const available = claimedTotal - existingCertified;
+        const existingCertified = parseMoney(existingCertRes.rows[0].total_certified);
+        const available = compareMoney(claimedTotal, existingCertified) > 0 ? subtractMoney(claimedTotal, existingCertified) : '0.00';
 
-        if (alloc.amount > available) {
+        if (compareMoney(parsedAllocAmount, available) > 0) {
           const err: any = new Error(
-            `Alokasi sertifikasi (${alloc.amount}) melebihi sisa klaim yang tersedia (${available}).`
+            `Alokasi sertifikasi (${parsedAllocAmount}) melebihi sisa klaim yang tersedia (${available}).`
           );
           err.statusCode = 400;
           throw err;
@@ -1015,7 +1041,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
 
       // Insert allocations
       const allocationRecords: CertificationAllocationRecord[] = [];
+      let totalAllocatedMinor = '0.00';
       for (const alloc of input.allocations) {
+        const parsedAmount = parseMoney(alloc.amount);
         const allocRes = await client.query(
           `INSERT INTO public.certification_allocations (
             claim_id,
@@ -1024,21 +1052,22 @@ export class PostgresLedgerRepository implements ILedgerRepository {
             created_at
           ) VALUES ($1, $2, $3, NOW())
           RETURNING *`,
-          [alloc.claimId, cert.id, alloc.amount]
+          [alloc.claimId, cert.id, parsedAmount]
         );
         const a = allocRes.rows[0];
+        const recordAllocated = parseMoney(a.allocated_amount);
+        totalAllocatedMinor = addMoney(totalAllocatedMinor, recordAllocated);
         allocationRecords.push({
           id: a.id,
           certificateId: a.certificate_id,
           claimId: a.claim_id,
-          allocatedAmount: Number(a.allocated_amount),
+          allocatedAmount: recordAllocated,
           createdAt: new Date(a.created_at).toISOString()
         });
       }
 
       await client.query('COMMIT');
 
-      const totalAllocated = allocationRecords.reduce((sum, a) => sum + a.allocatedAmount, 0);
       return {
         id: cert.id,
         orgId: cert.org_id,
@@ -1047,7 +1076,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         certifiedAt: cert.certified_at,
         status: cert.status,
         description: cert.description,
-        totalAllocatedAmount: totalAllocated,
+        totalAllocatedAmount: totalAllocatedMinor,
         createdAt: new Date(cert.created_at).toISOString(),
         updatedAt: new Date(cert.updated_at).toISOString(),
         allocations: allocationRecords
@@ -1081,7 +1110,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       certifiedAt: r.certified_at,
       status: r.status,
       description: r.description || '',
-      totalAllocatedAmount: Number(r.total_allocated),
+      totalAllocatedAmount: parseMoney(r.total_allocated),
       createdAt: new Date(r.created_at).toISOString(),
       updatedAt: new Date(r.updated_at).toISOString()
     }));
@@ -1114,14 +1143,14 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       certifiedAt: r.certified_at,
       status: r.status,
       description: r.description || '',
-      totalAllocatedAmount: Number(r.total_allocated),
+      totalAllocatedAmount: parseMoney(r.total_allocated),
       createdAt: new Date(r.created_at).toISOString(),
       updatedAt: new Date(r.updated_at).toISOString(),
       allocations: allocRes.rows.map(a => ({
         id: a.id,
         certificateId: a.certificate_id,
         claimId: a.claim_id,
-        allocatedAmount: Number(a.allocated_amount),
+        allocatedAmount: parseMoney(a.allocated_amount),
         createdAt: new Date(a.created_at).toISOString()
       }))
     };
@@ -1156,19 +1185,19 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     `;
     const res = await this.pool.query(query, [orgId, projectId]);
     const row = res.rows[0];
-    const w = Number(row.work_performed);
-    const m = Number(row.measured);
-    const c = Number(row.claimed);
-    const s = Number(row.certified);
+    const w = parseMoney(row.work_performed);
+    const m = parseMoney(row.measured);
+    const c = parseMoney(row.claimed);
+    const s = parseMoney(row.certified);
 
     return {
       workPerformed: w,
       measured: m,
       claimed: c,
       certified: s,
-      g1: Math.max(0, w - m),
-      g2: Math.max(0, m - c),
-      g3: Math.max(0, c - s)
+      g1: compareMoney(w, m) > 0 ? subtractMoney(w, m) : '0.00',
+      g2: compareMoney(m, c) > 0 ? subtractMoney(m, c) : '0.00',
+      g3: compareMoney(c, s) > 0 ? subtractMoney(c, s) : '0.00'
     };
   }
 
@@ -1201,16 +1230,16 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     return res.rows.map(r => ({
       certificateId: r.cert_id,
       certificateNumber: r.certificate_number,
-      certifiedAmount: Number(r.certified_amount),
+      certifiedAmount: parseMoney(r.certified_amount),
       claimId: r.claim_id,
       claimNumber: r.claim_number,
-      claimedAmount: Number(r.claimed_amount),
+      claimedAmount: parseMoney(r.claimed_amount),
       measurementId: r.meas_id,
       measurementNumber: r.measurement_number,
-      measuredAmount: Number(r.measured_amount),
+      measuredAmount: parseMoney(r.measured_amount),
       workProgressLineId: r.wpl_id,
       progressDescription: r.progress_desc,
-      progressAmount: Number(r.progress_amount)
+      progressAmount: parseMoney(r.progress_amount)
     }));
   }
 }
@@ -1230,10 +1259,10 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
 
   public seedDefaults(): void {
     const seedProjects = [
-      { id: 'p1', orgId: 'org-001', code: 'COV-001', values: [1200000000, 1050000000, 900000000, 750000000] },
-      { id: 'p2', orgId: 'org-001', code: 'COV-002', values: [3200000000, 2900000000, 2700000000, 2400000000] },
-      { id: 'p3', orgId: 'org-001', code: 'COV-003', values: [1800000000, 1650000000, 1450000000, 1250000000] },
-      { id: 'p-org2-01', orgId: 'org-002', code: 'EXT-001', values: [1000000000, 800000000, 700000000, 600000000] }
+      { id: 'p1', orgId: 'org-001', code: 'COV-001', values: ['1200000000.00', '1050000000.00', '900000000.00', '750000000.00'] },
+      { id: 'p2', orgId: 'org-001', code: 'COV-002', values: ['3200000000.00', '2900000000.00', '2700000000.00', '2400000000.00'] },
+      { id: 'p3', orgId: 'org-001', code: 'COV-003', values: ['1800000000.00', '1650000000.00', '1450000000.00', '1250000000.00'] },
+      { id: 'p-org2-01', orgId: 'org-002', code: 'EXT-001', values: ['1000000000.00', '800000000.00', '700000000.00', '600000000.00'] }
     ];
 
     for (const sp of seedProjects) {
@@ -1249,7 +1278,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         unit: 'LS',
         principalAmount: sp.values[0],
         allocatedToMeasurement: sp.values[1],
-        availableAmount: sp.values[0] - sp.values[1],
+        availableAmount: subtractMoney(sp.values[0], sp.values[1]),
         progressDate: '2026-08-01',
         evidenceStatus: 'VERIFIED',
         status: 'ACTIVE',
@@ -1268,7 +1297,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         status: 'VERIFIED',
         totalAllocatedAmount: sp.values[1],
         allocatedToClaim: sp.values[2],
-        availableAmount: sp.values[1] - sp.values[2],
+        availableAmount: subtractMoney(sp.values[1], sp.values[2]),
         createdAt: now,
         updatedAt: now
       });
@@ -1293,7 +1322,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         description: `Claim for ${sp.code}`,
         totalAllocatedAmount: sp.values[2],
         allocatedToCertification: sp.values[3],
-        availableAmount: sp.values[2] - sp.values[3],
+        availableAmount: subtractMoney(sp.values[2], sp.values[3]),
         createdAt: now,
         updatedAt: now
       });
@@ -1348,7 +1377,8 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
   }
 
   public async createWorkProgressLine(input: CreateWorkProgressInput): Promise<WorkProgressLineRecord> {
-    if (input.principalAmount <= 0) {
+    const parsedPrincipal = parseMoney(input.principalAmount);
+    if (!isPositiveMoney(parsedPrincipal)) {
       const err: any = new Error('Nilai progres harus lebih dari nol.');
       err.statusCode = 400;
       throw err;
@@ -1374,9 +1404,9 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
       description: input.description.trim(),
       quantity: input.quantity ?? 1,
       unit: input.unit || 'LS',
-      principalAmount: input.principalAmount,
-      allocatedToMeasurement: 0,
-      availableAmount: input.principalAmount,
+      principalAmount: parsedPrincipal,
+      allocatedToMeasurement: '0.00',
+      availableAmount: parsedPrincipal,
       progressDate: input.progressDate || now.split('T')[0],
       evidenceStatus: input.evidenceStatus || 'VERIFIED',
       status: 'ACTIVE',
@@ -1391,13 +1421,17 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     return this.workProgressLines
       .filter(l => l.orgId === orgId && l.projectId === projectId && l.status === 'ACTIVE')
       .map(l => {
-        const allocated = this.measurementAllocations
-          .filter(a => a.workProgressLineId === l.id)
-          .reduce((sum, a) => sum + a.allocatedAmount, 0);
+        let allocated = '0.00';
+        for (const a of this.measurementAllocations) {
+          if (a.workProgressLineId === l.id) {
+            allocated = addMoney(allocated, a.allocatedAmount);
+          }
+        }
+        const available = compareMoney(l.principalAmount, allocated) > 0 ? subtractMoney(l.principalAmount, allocated) : '0.00';
         return {
           ...l,
           allocatedToMeasurement: allocated,
-          availableAmount: Math.max(0, l.principalAmount - allocated)
+          availableAmount: available
         };
       });
   }
@@ -1405,13 +1439,17 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
   public async getWorkProgressLineById(orgId: string, projectId: string, id: string): Promise<WorkProgressLineRecord | null> {
     const found = this.workProgressLines.find(l => l.orgId === orgId && l.projectId === projectId && l.id === id);
     if (!found) return null;
-    const allocated = this.measurementAllocations
-      .filter(a => a.workProgressLineId === found.id)
-      .reduce((sum, a) => sum + a.allocatedAmount, 0);
+    let allocated = '0.00';
+    for (const a of this.measurementAllocations) {
+      if (a.workProgressLineId === found.id) {
+        allocated = addMoney(allocated, a.allocatedAmount);
+      }
+    }
+    const available = compareMoney(found.principalAmount, allocated) > 0 ? subtractMoney(found.principalAmount, allocated) : '0.00';
     return {
       ...found,
       allocatedToMeasurement: allocated,
-      availableAmount: Math.max(0, found.principalAmount - allocated)
+      availableAmount: available
     };
   }
 
@@ -1443,7 +1481,8 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     try {
       for (const alloc of input.allocations) {
         releaseFns.push(await this.acquireLock(`wpl-${alloc.workProgressLineId}`));
-        if (alloc.amount <= 0) {
+        const parsedAllocAmount = parseMoney(alloc.amount);
+        if (!isPositiveMoney(parsedAllocAmount)) {
           const err: any = new Error('Nilai alokasi harus lebih dari nol.');
           err.statusCode = 400;
           throw err;
@@ -1459,12 +1498,15 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
           err.statusCode = 400;
           throw err;
         }
-        const alreadyAllocated = this.measurementAllocations
-          .filter(a => a.workProgressLineId === line.id)
-          .reduce((sum, a) => sum + a.allocatedAmount, 0);
-        const available = line.principalAmount - alreadyAllocated;
-        if (alloc.amount > available) {
-          const err: any = new Error(`Alokasi pengukuran (${alloc.amount}) melebihi sisa progres yang tersedia (${available}).`);
+        let alreadyAllocated = '0.00';
+        for (const a of this.measurementAllocations) {
+          if (a.workProgressLineId === line.id) {
+            alreadyAllocated = addMoney(alreadyAllocated, a.allocatedAmount);
+          }
+        }
+        const available = compareMoney(line.principalAmount, alreadyAllocated) > 0 ? subtractMoney(line.principalAmount, alreadyAllocated) : '0.00';
+        if (compareMoney(parsedAllocAmount, available) > 0) {
+          const err: any = new Error(`Alokasi pengukuran (${parsedAllocAmount}) melebihi sisa progres yang tersedia (${available}).`);
           err.statusCode = 400;
           throw err;
         }
@@ -1472,6 +1514,22 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
 
       const now = new Date().toISOString();
       const measId = `meas-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      let totalAllocated = '0.00';
+      const createdAllocations: MeasurementAllocationRecord[] = [];
+      for (const alloc of input.allocations) {
+        const parsedAmount = parseMoney(alloc.amount);
+        totalAllocated = addMoney(totalAllocated, parsedAmount);
+        const allocRecord: MeasurementAllocationRecord = {
+          id: `ma-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          measurementId: measId,
+          workProgressLineId: alloc.workProgressLineId,
+          allocatedAmount: parsedAmount,
+          createdAt: now
+        };
+        this.measurementAllocations.push(allocRecord);
+        createdAllocations.push(allocRecord);
+      }
+
       const newMeas: MeasurementRecord = {
         id: measId,
         orgId: input.orgId,
@@ -1480,25 +1538,12 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         measurementDate: input.measurementDate || now.split('T')[0],
         description: input.description || '',
         status: 'VERIFIED',
-        totalAllocatedAmount: input.allocations.reduce((s, a) => s + a.amount, 0),
-        allocatedToClaim: 0,
-        availableAmount: input.allocations.reduce((s, a) => s + a.amount, 0),
+        totalAllocatedAmount: totalAllocated,
+        allocatedToClaim: '0.00',
+        availableAmount: totalAllocated,
         createdAt: now,
         updatedAt: now
       };
-
-      const createdAllocations: MeasurementAllocationRecord[] = [];
-      for (const alloc of input.allocations) {
-        const allocRecord: MeasurementAllocationRecord = {
-          id: `ma-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          measurementId: measId,
-          workProgressLineId: alloc.workProgressLineId,
-          allocatedAmount: alloc.amount,
-          createdAt: now
-        };
-        this.measurementAllocations.push(allocRecord);
-        createdAllocations.push(allocRecord);
-      }
 
       this.measurements.push(newMeas);
       return { ...newMeas, allocations: createdAllocations };
@@ -1511,17 +1556,20 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     return this.measurements
       .filter(m => m.orgId === orgId && m.projectId === projectId)
       .map(m => {
-        const total = this.measurementAllocations
-          .filter(a => a.measurementId === m.id)
-          .reduce((s, a) => s + a.allocatedAmount, 0);
-        const claimed = this.claimAllocations
-          .filter(ca => ca.measurementId === m.id)
-          .reduce((s, ca) => s + ca.allocatedAmount, 0);
+        let total = '0.00';
+        for (const a of this.measurementAllocations) {
+          if (a.measurementId === m.id) total = addMoney(total, a.allocatedAmount);
+        }
+        let claimed = '0.00';
+        for (const ca of this.claimAllocations) {
+          if (ca.measurementId === m.id) claimed = addMoney(claimed, ca.allocatedAmount);
+        }
+        const available = compareMoney(total, claimed) > 0 ? subtractMoney(total, claimed) : '0.00';
         return {
           ...m,
           totalAllocatedAmount: total,
           allocatedToClaim: claimed,
-          availableAmount: Math.max(0, total - claimed)
+          availableAmount: available
         };
       });
   }
@@ -1529,18 +1577,21 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
   public async getMeasurementById(orgId: string, projectId: string, id: string): Promise<MeasurementRecord | null> {
     const found = this.measurements.find(m => m.orgId === orgId && m.projectId === projectId && m.id === id);
     if (!found) return null;
-    const total = this.measurementAllocations
-      .filter(a => a.measurementId === found.id)
-      .reduce((s, a) => s + a.allocatedAmount, 0);
-    const claimed = this.claimAllocations
-      .filter(ca => ca.measurementId === found.id)
-      .reduce((s, ca) => s + ca.allocatedAmount, 0);
+    let total = '0.00';
+    for (const a of this.measurementAllocations) {
+      if (a.measurementId === found.id) total = addMoney(total, a.allocatedAmount);
+    }
+    let claimed = '0.00';
+    for (const ca of this.claimAllocations) {
+      if (ca.measurementId === found.id) claimed = addMoney(claimed, ca.allocatedAmount);
+    }
+    const available = compareMoney(total, claimed) > 0 ? subtractMoney(total, claimed) : '0.00';
     const allocs = this.measurementAllocations.filter(a => a.measurementId === found.id);
     return {
       ...found,
       totalAllocatedAmount: total,
       allocatedToClaim: claimed,
-      availableAmount: Math.max(0, total - claimed),
+      availableAmount: available,
       allocations: [...allocs]
     };
   }
@@ -1573,7 +1624,8 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     try {
       for (const alloc of input.allocations) {
         releaseFns.push(await this.acquireLock(`meas-${alloc.measurementId}`));
-        if (alloc.amount <= 0) {
+        const parsedAllocAmount = parseMoney(alloc.amount);
+        if (!isPositiveMoney(parsedAllocAmount)) {
           const err: any = new Error('Nilai alokasi harus lebih dari nol.');
           err.statusCode = 400;
           throw err;
@@ -1584,15 +1636,17 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
           err.statusCode = 404;
           throw err;
         }
-        const measuredTotal = this.measurementAllocations
-          .filter(a => a.measurementId === meas.id)
-          .reduce((s, a) => s + a.allocatedAmount, 0);
-        const existingClaimed = this.claimAllocations
-          .filter(ca => ca.measurementId === meas.id)
-          .reduce((s, ca) => s + ca.allocatedAmount, 0);
-        const available = measuredTotal - existingClaimed;
-        if (alloc.amount > available) {
-          const err: any = new Error(`Alokasi klaim (${alloc.amount}) melebihi sisa pengukuran yang tersedia (${available}).`);
+        let measuredTotal = '0.00';
+        for (const a of this.measurementAllocations) {
+          if (a.measurementId === meas.id) measuredTotal = addMoney(measuredTotal, a.allocatedAmount);
+        }
+        let existingClaimed = '0.00';
+        for (const ca of this.claimAllocations) {
+          if (ca.measurementId === meas.id) existingClaimed = addMoney(existingClaimed, ca.allocatedAmount);
+        }
+        const available = compareMoney(measuredTotal, existingClaimed) > 0 ? subtractMoney(measuredTotal, existingClaimed) : '0.00';
+        if (compareMoney(parsedAllocAmount, available) > 0) {
+          const err: any = new Error(`Alokasi klaim (${parsedAllocAmount}) melebihi sisa pengukuran yang tersedia (${available}).`);
           err.statusCode = 400;
           throw err;
         }
@@ -1600,7 +1654,22 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
 
       const now = new Date().toISOString();
       const claimId = `claim-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-      const totalAmount = input.allocations.reduce((s, a) => s + a.amount, 0);
+      let totalAmount = '0.00';
+      const createdAllocations: ClaimAllocationRecord[] = [];
+      for (const alloc of input.allocations) {
+        const parsedAmount = parseMoney(alloc.amount);
+        totalAmount = addMoney(totalAmount, parsedAmount);
+        const allocRecord: ClaimAllocationRecord = {
+          id: `ca-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          claimId: claimId,
+          measurementId: alloc.measurementId,
+          allocatedAmount: parsedAmount,
+          createdAt: now
+        };
+        this.claimAllocations.push(allocRecord);
+        createdAllocations.push(allocRecord);
+      }
+
       const newClaim: ClaimRecord = {
         id: claimId,
         orgId: input.orgId,
@@ -1611,24 +1680,11 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         status: 'SUBMITTED',
         description: input.description || '',
         totalAllocatedAmount: totalAmount,
-        allocatedToCertification: 0,
+        allocatedToCertification: '0.00',
         availableAmount: totalAmount,
         createdAt: now,
         updatedAt: now
       };
-
-      const createdAllocations: ClaimAllocationRecord[] = [];
-      for (const alloc of input.allocations) {
-        const allocRecord: ClaimAllocationRecord = {
-          id: `ca-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          claimId: claimId,
-          measurementId: alloc.measurementId,
-          allocatedAmount: alloc.amount,
-          createdAt: now
-        };
-        this.claimAllocations.push(allocRecord);
-        createdAllocations.push(allocRecord);
-      }
 
       this.claims.push(newClaim);
       return { ...newClaim, allocations: createdAllocations };
@@ -1641,17 +1697,20 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     return this.claims
       .filter(c => c.orgId === orgId && c.projectId === projectId)
       .map(c => {
-        const total = this.claimAllocations
-          .filter(ca => ca.claimId === c.id)
-          .reduce((s, ca) => s + ca.allocatedAmount, 0);
-        const certified = this.certificationAllocations
-          .filter(ka => ka.claimId === c.id)
-          .reduce((s, ka) => s + ka.allocatedAmount, 0);
+        let total = '0.00';
+        for (const ca of this.claimAllocations) {
+          if (ca.claimId === c.id) total = addMoney(total, ca.allocatedAmount);
+        }
+        let certified = '0.00';
+        for (const ka of this.certificationAllocations) {
+          if (ka.claimId === c.id) certified = addMoney(certified, ka.allocatedAmount);
+        }
+        const available = compareMoney(total, certified) > 0 ? subtractMoney(total, certified) : '0.00';
         return {
           ...c,
           totalAllocatedAmount: total,
           allocatedToCertification: certified,
-          availableAmount: Math.max(0, total - certified)
+          availableAmount: available
         };
       });
   }
@@ -1659,18 +1718,21 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
   public async getClaimById(orgId: string, projectId: string, id: string): Promise<ClaimRecord | null> {
     const found = this.claims.find(c => c.orgId === orgId && c.projectId === projectId && c.id === id);
     if (!found) return null;
-    const total = this.claimAllocations
-      .filter(ca => ca.claimId === found.id)
-      .reduce((s, ca) => s + ca.allocatedAmount, 0);
-    const certified = this.certificationAllocations
-      .filter(ka => ka.claimId === found.id)
-      .reduce((s, ka) => s + ka.allocatedAmount, 0);
+    let total = '0.00';
+    for (const ca of this.claimAllocations) {
+      if (ca.claimId === found.id) total = addMoney(total, ca.allocatedAmount);
+    }
+    let certified = '0.00';
+    for (const ka of this.certificationAllocations) {
+      if (ka.claimId === found.id) certified = addMoney(certified, ka.allocatedAmount);
+    }
+    const available = compareMoney(total, certified) > 0 ? subtractMoney(total, certified) : '0.00';
     const allocs = this.claimAllocations.filter(ca => ca.claimId === found.id);
     return {
       ...found,
       totalAllocatedAmount: total,
       allocatedToCertification: certified,
-      availableAmount: Math.max(0, total - certified),
+      availableAmount: available,
       allocations: [...allocs]
     };
   }
@@ -1703,7 +1765,8 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     try {
       for (const alloc of input.allocations) {
         releaseFns.push(await this.acquireLock(`claim-${alloc.claimId}`));
-        if (alloc.amount <= 0) {
+        const parsedAllocAmount = parseMoney(alloc.amount);
+        if (!isPositiveMoney(parsedAllocAmount)) {
           const err: any = new Error('Nilai alokasi harus lebih dari nol.');
           err.statusCode = 400;
           throw err;
@@ -1714,15 +1777,17 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
           err.statusCode = 404;
           throw err;
         }
-        const claimedTotal = this.claimAllocations
-          .filter(ca => ca.claimId === claim.id)
-          .reduce((s, ca) => s + ca.allocatedAmount, 0);
-        const existingCertified = this.certificationAllocations
-          .filter(ka => ka.claimId === claim.id)
-          .reduce((s, ka) => s + ka.allocatedAmount, 0);
-        const available = claimedTotal - existingCertified;
-        if (alloc.amount > available) {
-          const err: any = new Error(`Alokasi sertifikasi (${alloc.amount}) melebihi sisa klaim yang tersedia (${available}).`);
+        let claimedTotal = '0.00';
+        for (const ca of this.claimAllocations) {
+          if (ca.claimId === claim.id) claimedTotal = addMoney(claimedTotal, ca.allocatedAmount);
+        }
+        let existingCertified = '0.00';
+        for (const ka of this.certificationAllocations) {
+          if (ka.claimId === claim.id) existingCertified = addMoney(existingCertified, ka.allocatedAmount);
+        }
+        const available = compareMoney(claimedTotal, existingCertified) > 0 ? subtractMoney(claimedTotal, existingCertified) : '0.00';
+        if (compareMoney(parsedAllocAmount, available) > 0) {
+          const err: any = new Error(`Alokasi sertifikasi (${parsedAllocAmount}) melebihi sisa klaim yang tersedia (${available}).`);
           err.statusCode = 400;
           throw err;
         }
@@ -1730,7 +1795,22 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
 
       const now = new Date().toISOString();
       const certId = `cert-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-      const totalAmount = input.allocations.reduce((s, a) => s + a.amount, 0);
+      let totalAmount = '0.00';
+      const createdAllocations: CertificationAllocationRecord[] = [];
+      for (const alloc of input.allocations) {
+        const parsedAmount = parseMoney(alloc.amount);
+        totalAmount = addMoney(totalAmount, parsedAmount);
+        const allocRecord: CertificationAllocationRecord = {
+          id: `ka-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          certificateId: certId,
+          claimId: alloc.claimId,
+          allocatedAmount: parsedAmount,
+          createdAt: now
+        };
+        this.certificationAllocations.push(allocRecord);
+        createdAllocations.push(allocRecord);
+      }
+
       const newCert: CertificateRecord = {
         id: certId,
         orgId: input.orgId,
@@ -1744,19 +1824,6 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         updatedAt: now
       };
 
-      const createdAllocations: CertificationAllocationRecord[] = [];
-      for (const alloc of input.allocations) {
-        const allocRecord: CertificationAllocationRecord = {
-          id: `ka-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          certificateId: certId,
-          claimId: alloc.claimId,
-          allocatedAmount: alloc.amount,
-          createdAt: now
-        };
-        this.certificationAllocations.push(allocRecord);
-        createdAllocations.push(allocRecord);
-      }
-
       this.certificates.push(newCert);
       return { ...newCert, allocations: createdAllocations };
     } finally {
@@ -1768,9 +1835,10 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     return this.certificates
       .filter(k => k.orgId === orgId && k.projectId === projectId)
       .map(k => {
-        const total = this.certificationAllocations
-          .filter(ka => ka.certificateId === k.id)
-          .reduce((s, ka) => s + ka.allocatedAmount, 0);
+        let total = '0.00';
+        for (const ka of this.certificationAllocations) {
+          if (ka.certificateId === k.id) total = addMoney(total, ka.allocatedAmount);
+        }
         return {
           ...k,
           totalAllocatedAmount: total
@@ -1781,9 +1849,10 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
   public async getCertificateById(orgId: string, projectId: string, id: string): Promise<CertificateRecord | null> {
     const found = this.certificates.find(k => k.orgId === orgId && k.projectId === projectId && k.id === id);
     if (!found) return null;
-    const total = this.certificationAllocations
-      .filter(ka => ka.certificateId === found.id)
-      .reduce((s, ka) => s + ka.allocatedAmount, 0);
+    let total = '0.00';
+    for (const ka of this.certificationAllocations) {
+      if (ka.certificateId === found.id) total = addMoney(total, ka.allocatedAmount);
+    }
     const allocs = this.certificationAllocations.filter(ka => ka.certificateId === found.id);
     return {
       ...found,
@@ -1793,33 +1862,45 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
   }
 
   public async getLedgerTotals(orgId: string, projectId: string): Promise<LedgerTotals> {
-    const w = this.workProgressLines
-      .filter(l => l.orgId === orgId && l.projectId === projectId && l.status === 'ACTIVE')
-      .reduce((s, l) => s + l.principalAmount, 0);
+    let w = '0.00';
+    for (const l of this.workProgressLines) {
+      if (l.orgId === orgId && l.projectId === projectId && l.status === 'ACTIVE') {
+        w = addMoney(w, l.principalAmount);
+      }
+    }
 
     const projectMeasIds = new Set(this.measurements.filter(m => m.orgId === orgId && m.projectId === projectId).map(m => m.id));
-    const m = this.measurementAllocations
-      .filter(ma => projectMeasIds.has(ma.measurementId))
-      .reduce((s, ma) => s + ma.allocatedAmount, 0);
+    let m = '0.00';
+    for (const ma of this.measurementAllocations) {
+      if (projectMeasIds.has(ma.measurementId)) {
+        m = addMoney(m, ma.allocatedAmount);
+      }
+    }
 
     const projectClaimIds = new Set(this.claims.filter(c => c.orgId === orgId && c.projectId === projectId).map(c => c.id));
-    const c = this.claimAllocations
-      .filter(ca => projectClaimIds.has(ca.claimId))
-      .reduce((s, ca) => s + ca.allocatedAmount, 0);
+    let c = '0.00';
+    for (const ca of this.claimAllocations) {
+      if (projectClaimIds.has(ca.claimId)) {
+        c = addMoney(c, ca.allocatedAmount);
+      }
+    }
 
     const projectCertIds = new Set(this.certificates.filter(k => k.orgId === orgId && k.projectId === projectId).map(k => k.id));
-    const s = this.certificationAllocations
-      .filter(ka => projectCertIds.has(ka.certificateId))
-      .reduce((acc, ka) => acc + ka.allocatedAmount, 0);
+    let s = '0.00';
+    for (const ka of this.certificationAllocations) {
+      if (projectCertIds.has(ka.certificateId)) {
+        s = addMoney(s, ka.allocatedAmount);
+      }
+    }
 
     return {
       workPerformed: w,
       measured: m,
       claimed: c,
       certified: s,
-      g1: Math.max(0, w - m),
-      g2: Math.max(0, m - c),
-      g3: Math.max(0, c - s)
+      g1: compareMoney(w, m) > 0 ? subtractMoney(w, m) : '0.00',
+      g2: compareMoney(m, c) > 0 ? subtractMoney(m, c) : '0.00',
+      g3: compareMoney(c, s) > 0 ? subtractMoney(c, s) : '0.00'
     };
   }
 

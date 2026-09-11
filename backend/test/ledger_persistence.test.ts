@@ -187,7 +187,7 @@ test('P0B2-01: Tenant A creates Work Progress → PostgreSQL row persists', asyn
   assert.strictEqual(res.status, 201);
   const body = await res.json();
   assert.strictEqual(body.success, true);
-  assert.strictEqual(body.data.principalAmount, 1000000000);
+  assert.strictEqual(body.data.principalAmount, '1000000000.00');
   wplAlfa01Id = body.data.id;
 
   // Verify direct row in PostgreSQL
@@ -208,7 +208,7 @@ test('P0B2-02: Work Progress survives repository/app recreation', async () => {
   const lines = await freshRepo.getWorkProgressLines(ORG_A_ID, PROJ_A_1);
   const found = lines.find(l => l.id === wplAlfa01Id);
   assert.ok(found, 'Record progress harus bertahan setelah restart repository');
-  assert.strictEqual(found.principalAmount, 1000000000);
+  assert.strictEqual(found.principalAmount, '1000000000.00');
 });
 
 // P0B2-03: Tenant B cannot read Tenant A Work Progress
@@ -240,7 +240,7 @@ test('P0B2-04: Measurement partial allocation succeeds', async () => {
   });
   assert.strictEqual(res1.status, 201);
   const body1 = await res1.json();
-  assert.strictEqual(body1.data.totalAllocatedAmount, 600000000);
+  assert.strictEqual(body1.data.totalAllocatedAmount, '600000000.00');
   measAlfa01Id = body1.data.id;
 
   // Measurement #2: Allocate 400,000,000 (remaining available)
@@ -260,7 +260,7 @@ test('P0B2-04: Measurement partial allocation succeeds', async () => {
   });
   assert.strictEqual(res2.status, 201);
   const body2 = await res2.json();
-  assert.strictEqual(body2.data.totalAllocatedAmount, 400000000);
+  assert.strictEqual(body2.data.totalAllocatedAmount, '400000000.00');
 });
 
 // P0B2-05: Measurement over-allocation rejected
@@ -305,7 +305,7 @@ test('P0B2-06: Claim partial allocation succeeds', async () => {
   });
   assert.strictEqual(res.status, 201);
   const body = await res.json();
-  assert.strictEqual(body.data.totalAllocatedAmount, 400000000);
+  assert.strictEqual(body.data.totalAllocatedAmount, '400000000.00');
   claimAlfa01Id = body.data.id;
 });
 
@@ -351,7 +351,7 @@ test('P0B2-08: Certification partial allocation succeeds', async () => {
   });
   assert.strictEqual(res.status, 201);
   const body = await res.json();
-  assert.strictEqual(body.data.totalAllocatedAmount, 300000000);
+  assert.strictEqual(body.data.totalAllocatedAmount, '300000000.00');
   certAlfa01Id = body.data.id;
 });
 
@@ -393,41 +393,41 @@ test('P0B2-10: Lineage reconstructs: Certification → Claim → Measurement →
   assert.strictEqual(entry.claimId, claimAlfa01Id);
   assert.strictEqual(entry.measurementId, measAlfa01Id);
   assert.strictEqual(entry.workProgressLineId, wplAlfa01Id);
-  assert.strictEqual(entry.certifiedAmount, 300000000);
+  assert.strictEqual(entry.certifiedAmount, '300000000.00');
 });
 
 // P0B2-11: W >= M >= C >= S invariant holds
 test('P0B2-11: W >= M >= C >= S invariant holds', async () => {
   const totals = await pgLedgerRepo.getLedgerTotals(ORG_A_ID, PROJ_A_1);
-  assert.ok(totals.workPerformed >= totals.measured, 'W >= M');
-  assert.ok(totals.measured >= totals.claimed, 'M >= C');
-  assert.ok(totals.claimed >= totals.certified, 'C >= S');
+  assert.ok(Number(totals.workPerformed) >= Number(totals.measured), 'W >= M');
+  assert.ok(Number(totals.measured) >= Number(totals.claimed), 'M >= C');
+  assert.ok(Number(totals.claimed) >= Number(totals.certified), 'C >= S');
 
-  assert.strictEqual(totals.workPerformed, 1000000000); // W = 1.000.000.000
-  assert.strictEqual(totals.measured, 1000000000);      // M = 600m + 400m = 1.000.000.000
-  assert.strictEqual(totals.claimed, 400000000);        // C = 400.000.000
-  assert.strictEqual(totals.certified, 300000000);      // S = 300.000.000
+  assert.strictEqual(totals.workPerformed, '1000000000.00'); // W = 1.000.000.000
+  assert.strictEqual(totals.measured, '1000000000.00');      // M = 600m + 400m = 1.000.000.000
+  assert.strictEqual(totals.claimed, '400000000.00');        // C = 400.000.000
+  assert.strictEqual(totals.certified, '300000000.00');      // S = 300.000.000
 });
 
 // P0B2-12: G1 = W - M
 test('P0B2-12: G1 = W - M', async () => {
   const totals = await pgLedgerRepo.getLedgerTotals(ORG_A_ID, PROJ_A_1);
-  assert.strictEqual(totals.g1, totals.workPerformed - totals.measured);
-  assert.strictEqual(totals.g1, 0); // 1000m - 1000m = 0
+  assert.strictEqual(Number(totals.g1), Number(totals.workPerformed) - Number(totals.measured));
+  assert.strictEqual(totals.g1, '0.00'); // 1000m - 1000m = 0
 });
 
 // P0B2-13: G2 = M - C
 test('P0B2-13: G2 = M - C', async () => {
   const totals = await pgLedgerRepo.getLedgerTotals(ORG_A_ID, PROJ_A_1);
-  assert.strictEqual(totals.g2, totals.measured - totals.claimed);
-  assert.strictEqual(totals.g2, 600000000); // 1000m - 400m = 600m
+  assert.strictEqual(Number(totals.g2), Number(totals.measured) - Number(totals.claimed));
+  assert.strictEqual(totals.g2, '600000000.00'); // 1000m - 400m = 600m
 });
 
 // P0B2-14: G3 = C - S
 test('P0B2-14: G3 = C - S', async () => {
   const totals = await pgLedgerRepo.getLedgerTotals(ORG_A_ID, PROJ_A_1);
-  assert.strictEqual(totals.g3, totals.claimed - totals.certified);
-  assert.strictEqual(totals.g3, 100000000); // 400m - 300m = 100m
+  assert.strictEqual(Number(totals.g3), Number(totals.claimed) - Number(totals.certified));
+  assert.strictEqual(totals.g3, '100000000.00'); // 400m - 300m = 100m
 });
 
 // P0B2-15: Cross-tenant allocation attempt rejected

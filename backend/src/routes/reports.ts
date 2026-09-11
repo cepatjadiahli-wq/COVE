@@ -22,14 +22,18 @@ async function enrichProjectsWithLedger(orgId: string, projects: any[]) {
     projects.map(async p => {
       try {
         const totals = await ledgerRepo.getLedgerTotals(orgId, p.id);
-        if (totals.workPerformed > 0 || totals.measured > 0 || totals.claimed > 0 || totals.certified > 0) {
+        const w = Number(totals.workPerformed);
+        const m = Number(totals.measured);
+        const c = Number(totals.claimed);
+        const s = Number(totals.certified);
+        if (w > 0 || m > 0 || c > 0 || s > 0) {
           return {
             ...p,
             values: [
-              totals.workPerformed,
-              totals.measured,
-              totals.claimed,
-              totals.certified,
+              w,
+              m,
+              c,
+              s,
               p.values[4] || 0,
               p.values[5] || 0
             ] as StageValues

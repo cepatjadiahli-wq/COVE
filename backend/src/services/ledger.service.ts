@@ -8,6 +8,14 @@ import type {StageValues, StageMetricsResult, ProjectEntity} from '../types/doma
 import {db} from '../db/store.js';
 import {getLedgerRepository} from '../repositories/ledger.repository.js';
 import {getProjectRepository} from '../repositories/project.repository.js';
+import {
+  type MoneyInput,
+  parseMoney,
+  addMoney,
+  subtractMoney,
+  compareMoney,
+  isPositiveMoney
+} from '../utils/money.js';
 
 export class LedgerService {
   /**
@@ -68,7 +76,7 @@ export class LedgerService {
     let orgId = '';
     let projectId = '';
     let stageIndex = 0;
-    let amount = 0;
+    let rawAmount: MoneyInput = 0;
     let reference = 'REF-AUTO';
     let reason = 'Pencatatan ledger baru';
 
@@ -76,19 +84,28 @@ export class LedgerService {
       orgId = arg1;
       projectId = arg2;
       stageIndex = Number(arg3);
-      amount = Number(arg4);
+      rawAmount = arg4;
       reference = arg5 || 'REF-AUTO';
       reason = arg6 || 'Pencatatan ledger baru';
     } else {
       projectId = arg1;
       stageIndex = Number(arg2);
-      amount = Number(arg3);
+      rawAmount = arg3;
       reference = arg4 || 'REF-AUTO';
       reason = arg5 || 'Pencatatan ledger baru';
     }
 
-    if (stageIndex < 0 || stageIndex > 5) return {success: false, error: 'Indeks tahapan tidak valid.'};
-    if (amount <= 0) return {success: false, error: 'Nilai harus lebih dari nol.'};
+    if (isNaN(stageIndex) || stageIndex < 0 || stageIndex > 5) return {success: false, error: 'Indeks tahapan tidak valid.'};
+
+    let amount: string;
+    try {
+      amount = parseMoney(rawAmount);
+      if (!isPositiveMoney(amount)) {
+        return {success: false, error: 'Nilai harus lebih dari nol.'};
+      }
+    } catch (err: any) {
+      return {success: false, error: err.message || 'Nilai tidak valid.'};
+    }
 
     // If orgId is available, execute through canonical PostgreSQL ledger repository
     if (orgId) {
@@ -113,10 +130,13 @@ export class LedgerService {
         } else if (stageIndex === 1) {
           // Stage 1: Measurement
           const lines = await ledgerRepo.getWorkProgressLines(orgId, projectId);
-          const availableLines = lines.filter(l => l.availableAmount > 0);
-          const totalAvailable = availableLines.reduce((s, l) => s + l.availableAmount, 0);
+          const availableLines = lines.filter(l => compareMoney(l.availableAmount, '0.00') > 0);
+          let totalAvailable = '0.00';
+          for (const l of availableLines) {
+            totalAvailable = addMoney(totalAvailable, l.availableAmount);
+          }
 
-          if (amount > totalAvailable) {
+          if (compareMoney(amount, totalAvailable) > 0) {
             return {
               success: false,
               error: `Nilai pengukuran (${amount}) melebihi sisa progres yang belum diukur (${totalAvailable}).`
@@ -124,12 +144,12 @@ export class LedgerService {
           }
 
           let remainingToAllocate = amount;
-          const allocations: {workProgressLineId: string; amount: number}[] = [];
+          const allocations: {workProgressLineId: string; amount: string}[] = [];
           for (const line of availableLines) {
-            if (remainingToAllocate <= 0) break;
-            const allocAmount = Math.min(remainingToAllocate, line.availableAmount);
+            if (compareMoney(remainingToAllocate, '0.00') <= 0) break;
+            const allocAmount = compareMoney(remainingToAllocate, line.availableAmount) < 0 ? remainingToAllocate : line.availableAmount;
             allocations.push({workProgressLineId: line.id, amount: allocAmount});
-            remainingToAllocate -= allocAmount;
+            remainingToAllocate = subtractMoney(remainingToAllocate, allocAmount);
           }
 
           await ledgerRepo.createMeasurement({
@@ -142,10 +162,13 @@ export class LedgerService {
         } else if (stageIndex === 2) {
           // Stage 2: Claim
           const measurements = await ledgerRepo.getMeasurements(orgId, projectId);
-          const availableMeas = measurements.filter(m => m.availableAmount > 0);
-          const totalAvailable = availableMeas.reduce((s, m) => s + m.availableAmount, 0);
+          const availableMeas = measurements.filter(m => compareMoney(m.availableAmount, '0.00') > 0);
+          let totalAvailable = '0.00';
+          for (const m of availableMeas) {
+            totalAvailable = addMoney(totalAvailable, m.availableAmount);
+          }
 
-          if (amount > totalAvailable) {
+          if (compareMoney(amount, totalAvailable) > 0) {
             return {
               success: false,
               error: `Nilai klaim (${amount}) melebihi sisa pengukuran yang belum diajukan (${totalAvailable}).`
@@ -153,12 +176,12 @@ export class LedgerService {
           }
 
           let remainingToAllocate = amount;
-          const allocations: {measurementId: string; amount: number}[] = [];
+          const allocations: {measurementId: string; amount: string}[] = [];
           for (const meas of availableMeas) {
-            if (remainingToAllocate <= 0) break;
-            const allocAmount = Math.min(remainingToAllocate, meas.availableAmount);
+            if (compareMoney(remainingToAllocate, '0.00') <= 0) break;
+            const allocAmount = compareMoney(remainingToAllocate, meas.availableAmount) < 0 ? remainingToAllocate : meas.availableAmount;
             allocations.push({measurementId: meas.id, amount: allocAmount});
-            remainingToAllocate -= allocAmount;
+            remainingToAllocate = subtractMoney(remainingToAllocate, allocAmount);
           }
 
           await ledgerRepo.createClaim({
@@ -171,10 +194,13 @@ export class LedgerService {
         } else if (stageIndex === 3) {
           // Stage 3: Certificate
           const claims = await ledgerRepo.getClaims(orgId, projectId);
-          const availableClaims = claims.filter(c => c.availableAmount > 0);
-          const totalAvailable = availableClaims.reduce((s, c) => s + c.availableAmount, 0);
+          const availableClaims = claims.filter(c => compareMoney(c.availableAmount, '0.00') > 0);
+          let totalAvailable = '0.00';
+          for (const c of availableClaims) {
+            totalAvailable = addMoney(totalAvailable, c.availableAmount);
+          }
 
-          if (amount > totalAvailable) {
+          if (compareMoney(amount, totalAvailable) > 0) {
             return {
               success: false,
               error: `Nilai sertifikasi (${amount}) melebihi sisa klaim yang belum disetujui (${totalAvailable}).`
@@ -182,12 +208,12 @@ export class LedgerService {
           }
 
           let remainingToAllocate = amount;
-          const allocations: {claimId: string; amount: number}[] = [];
+          const allocations: {claimId: string; amount: string}[] = [];
           for (const claim of availableClaims) {
-            if (remainingToAllocate <= 0) break;
-            const allocAmount = Math.min(remainingToAllocate, claim.availableAmount);
+            if (compareMoney(remainingToAllocate, '0.00') <= 0) break;
+            const allocAmount = compareMoney(remainingToAllocate, claim.availableAmount) < 0 ? remainingToAllocate : claim.availableAmount;
             allocations.push({claimId: claim.id, amount: allocAmount});
-            remainingToAllocate -= allocAmount;
+            remainingToAllocate = subtractMoney(remainingToAllocate, allocAmount);
           }
 
           await ledgerRepo.createCertificate({
@@ -199,18 +225,19 @@ export class LedgerService {
           });
         } else {
           // Stages 4 and 5 are transitional until P0-B3
-          if (stageIndex > 0 && amount > project.values[stageIndex - 1]) {
+          const numAmount = Number(amount);
+          if (stageIndex > 0 && numAmount > project.values[stageIndex - 1]) {
             return {success: false, error: 'Nilai tahap tidak boleh melebihi nilai tahap sebelumnya.'};
           }
-          project.values[stageIndex] = amount;
+          project.values[stageIndex] = numAmount;
         }
 
         const totals = await ledgerRepo.getLedgerTotals(orgId, projectId);
         const updatedValues: StageValues = [
-          totals.workPerformed,
-          totals.measured,
-          totals.claimed,
-          totals.certified,
+          Number(totals.workPerformed),
+          Number(totals.measured),
+          Number(totals.claimed),
+          Number(totals.certified),
           project.values[4] || 0,
           project.values[5] || 0
         ];
@@ -230,10 +257,11 @@ export class LedgerService {
     // Fallback in-memory behavior (for isolated unit tests without orgId)
     const project = db.projects.find(p => p.id === projectId);
     if (!project) return {success: false, error: 'Proyek tidak ditemukan.'};
-    if (stageIndex > 0 && amount > project.values[stageIndex - 1]) {
+    const numAmount = Number(amount);
+    if (stageIndex > 0 && numAmount > project.values[stageIndex - 1]) {
       return {success: false, error: 'Nilai tahap tidak boleh melebihi nilai tahap sebelumnya.'};
     }
-    project.values[stageIndex] = amount;
+    project.values[stageIndex] = numAmount;
     project.updated = '8 Sep 2026, 09.45';
     db.save();
 

@@ -49,10 +49,10 @@ ledgerRoute.get('/projects/:id/ledger', async (c) => {
 
   const totals = await getLedgerRepository().getLedgerTotals(actor.orgId, id);
   const canonicalValues: StageValues = [
-    totals.workPerformed,
-    totals.measured,
-    totals.claimed,
-    totals.certified,
+    Number(totals.workPerformed),
+    Number(totals.measured),
+    Number(totals.claimed),
+    Number(totals.certified),
     project.values[4] || 0,
     project.values[5] || 0
   ];
@@ -66,6 +66,7 @@ ledgerRoute.get('/projects/:id/ledger', async (c) => {
       projectName: project.name,
       contract: project.contract,
       values: canonicalValues,
+      totals,
       metrics
     }
   });
@@ -88,18 +89,15 @@ ledgerRoute.post('/projects/:id/ledger/entry', async (c) => {
 
   const body = await c.req.json().catch(() => ({}));
   const stageIndex = Number(body.stageIndex);
-  const amount = Number(body.amount);
+  const rawAmount = body.amount;
   const reference = (body.reference || `REF-${Date.now()}`).trim();
   const reason = (body.reason || 'Pencatatan ledger baru').trim();
 
   if (isNaN(stageIndex) || stageIndex < 0 || stageIndex > 5) {
     return c.json({success: false, error: 'Indeks tahapan tidak valid.'}, 400);
   }
-  if (isNaN(amount) || amount <= 0) {
-    return c.json({success: false, error: 'Nilai harus lebih dari nol.'}, 400);
-  }
 
-  const result = await LedgerService.recordStageEntry(actor.orgId, id, stageIndex, amount, reference, reason);
+  const result = await LedgerService.recordStageEntry(actor.orgId, id, stageIndex, rawAmount, reference, reason);
   if (!result.success) {
     return c.json({success: false, error: result.error}, 400);
   }
@@ -134,13 +132,10 @@ ledgerRoute.post('/projects/:id/progress', async (c) => {
 
   const body = await c.req.json().catch(() => ({}));
   const description = String(body.description || '').trim();
-  const principalAmount = Number(body.principalAmount);
+  const principalAmount = body.principalAmount;
 
   if (!description) {
     return c.json({success: false, error: 'Deskripsi progres diperlukan.'}, 400);
-  }
-  if (isNaN(principalAmount) || principalAmount <= 0) {
-    return c.json({success: false, error: 'Nilai progres harus lebih dari nol.'}, 400);
   }
 
   try {
