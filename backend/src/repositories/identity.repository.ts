@@ -22,6 +22,8 @@ export interface MembershipWithOrganization extends OrganizationMembershipEntity
 
 export interface IIdentityRepository {
   findProfileByAuthUserId(authUserId: string): Promise<ProfileEntity | null>;
+  /** Finds profile regardless of status — used to detect SUSPENDED accounts */
+  findProfileByAuthUserIdAny(authUserId: string): Promise<ProfileEntity | null>;
   ensureProfileForAuthUser(authUserId: string, email: string, fullName?: string): Promise<ProfileEntity>;
   getActiveMembershipsByProfileId(profileId: string): Promise<MembershipWithOrganization[]>;
   getOrganizationById(orgId: string): Promise<OrganizationEntity | null>;
@@ -59,6 +61,17 @@ export class PostgresIdentityRepository implements IIdentityRepository {
       SELECT id, auth_user_id AS "authUserId", full_name AS "fullName", phone, status, created_at AS "createdAt"
       FROM public.profiles
       WHERE auth_user_id = $1 AND status = 'ACTIVE'
+      LIMIT 1
+    `;
+    const res = await pgPool.query(query, [authUserId]);
+    return res.rows[0] || null;
+  }
+
+  public async findProfileByAuthUserIdAny(authUserId: string): Promise<ProfileEntity | null> {
+    const query = `
+      SELECT id, auth_user_id AS "authUserId", full_name AS "fullName", phone, status, created_at AS "createdAt"
+      FROM public.profiles
+      WHERE auth_user_id = $1
       LIMIT 1
     `;
     const res = await pgPool.query(query, [authUserId]);
@@ -181,18 +194,22 @@ export class PostgresIdentityRepository implements IIdentityRepository {
   }
 
   public async ensureProfileForAuthUser(authUserId: string, email: string, fullName?: string): Promise<ProfileEntity> {
-    const existing = await this.findProfileByAuthUserId(authUserId);
+    // Check for ANY existing profile (including SUSPENDED) — never bootstrap over a suspended account
+    const existing = await this.findProfileByAuthUserIdAny(authUserId);
     if (existing) return existing;
 
     const resolvedName = fullName?.trim() || email.split('@')[0] || 'Pengguna COVE';
     const query = `
       INSERT INTO public.profiles (auth_user_id, full_name, status)
       VALUES ($1, $2, 'ACTIVE')
-      ON CONFLICT (auth_user_id) DO UPDATE SET full_name = EXCLUDED.full_name
+      ON CONFLICT (auth_user_id) DO NOTHING
       RETURNING id, auth_user_id AS "authUserId", full_name AS "fullName", phone, status, created_at AS "createdAt"
     `;
     const res = await pgPool.query(query, [authUserId, resolvedName]);
-    return res.rows[0];
+    if (res.rows[0]) return res.rows[0];
+
+    // Row existed (conflict, no insert) — fetch whatever is there
+    return this.findProfileByAuthUserIdAny(authUserId) as Promise<ProfileEntity>;
   }
 
   public async updateOrganization(orgId: string, data: { legalName?: string; displayName?: string }): Promise<OrganizationEntity> {
@@ -225,7 +242,8 @@ export class PostgresIdentityRepository implements IIdentityRepository {
 
   public async upsertSubscription(orgId: string, data: Partial<TenantSubscriptionEntity>): Promise<TenantSubscriptionEntity> {
     const planId = data.planId || 'core';
-    const status = data.status || 'ACTIVE';
+    // Caller MUST explicitly pass status='ACTIVE' for verified settlement — never default to ACTIVE
+    const status = data.status || 'INACTIVE';
     const start = data.currentPeriodStart || new Date().toISOString();
     const end = data.currentPeriodEnd || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
 
@@ -298,6 +316,7 @@ export class InMemoryIdentityRepository implements IIdentityRepository {
   public adminAuditLogs: Array<AdminAuditLogRecord> = [];
 
   public async ensureProfileForAuthUser(authUserId: string, email: string, fullName?: string): Promise<ProfileEntity> {
+    // Look for ANY existing profile regardless of status — never bootstrap over a suspended account
     let existing = this.profiles.find(p => p.authUserId === authUserId);
     if (!existing) {
       existing = {
@@ -341,7 +360,8 @@ export class InMemoryIdentityRepository implements IIdentityRepository {
         organizationId: orgId,
         planId: data.planId || 'core',
         planName: data.planName || 'Core',
-        status: data.status || 'ACTIVE',
+        // Caller MUST explicitly pass status='ACTIVE' for verified settlement — never default to ACTIVE
+        status: data.status || 'INACTIVE',
         currentPeriodStart: data.currentPeriodStart || new Date().toISOString(),
         currentPeriodEnd: data.currentPeriodEnd || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
         amount: data.amount || 4900000,
@@ -379,6 +399,11 @@ export class InMemoryIdentityRepository implements IIdentityRepository {
 
   public async findProfileByAuthUserId(authUserId: string): Promise<ProfileEntity | null> {
     const p = this.profiles.find(x => x.authUserId === authUserId && x.status === 'ACTIVE');
+    return p ? {...p} : null;
+  }
+
+  public async findProfileByAuthUserIdAny(authUserId: string): Promise<ProfileEntity | null> {
+    const p = this.profiles.find(x => x.authUserId === authUserId);
     return p ? {...p} : null;
   }
 

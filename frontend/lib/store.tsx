@@ -141,6 +141,28 @@ function useWorkspaceStore() {
     }
   }, []);
 
+  /**
+   * Clears all tenant-scoped session state. Called on logout and SIGNED_OUT auth event.
+   * Prevents stale tenant context leaking across accounts.
+   */
+  const clearTenantSessionState = useCallback(() => {
+    setActor(null);
+    setRoleState(null);
+    setCompany('');
+    setSelectedTenantId(null);
+    setTenantOptions([]);
+    setTenantSelectionRequired(false);
+    setActiveOrganizationId(null); // also clears localStorage cove_active_org_id
+    setProjects([]);
+    setActions([]);
+    setInvoices([]);
+    setTickets([]);
+    setFeatures([]);
+    setDocuments([]);
+    setSubscription('Non-Aktif');
+    setJourney({ ...INITIAL_JOURNEY });
+  }, []);
+
   // Listen to Supabase Auth lifecycle
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -180,18 +202,14 @@ function useWorkspaceStore() {
         setAuthStatus('authenticated');
         reloadData();
       } else {
+        // SIGNED_OUT or session expired — clear ALL tenant state to prevent cross-account leakage
         setAuthStatus('unauthenticated');
-        setActor(null);
-        setRoleState(null);
-        setCompany('');
-        setProjects([]);
-        setActions([]);
-        setInvoices([]);
+        clearTenantSessionState();
       }
     });
 
     return () => subscription.unsubscribe();
-  }, [reloadData]);
+  }, [reloadData, clearTenantSessionState]);
 
   // Mutations
   const createProject = async (data: { name: string; code?: string; contract: number; customer: string; location?: string; owner?: string; values?: number[] }) => {
@@ -253,14 +271,8 @@ function useWorkspaceStore() {
 
   const logout = async () => {
     await supabase.auth.signOut();
-    setActor(null);
-    setRoleState(null);
-    setCompany('');
     setAuthStatus('unauthenticated');
-    setProjects([]);
-    setActions([]);
-    setInvoices([]);
-    setJourney({ ...INITIAL_JOURNEY });
+    clearTenantSessionState();
   };
 
   const createTicket = async (data: { title: string; body: string; category?: string; priority?: string }) => {
@@ -363,6 +375,7 @@ function useWorkspaceStore() {
     commercial,
     reset,
     logout,
+    clearTenantSessionState,
     isLoading,
     reloadData,
     createProject,

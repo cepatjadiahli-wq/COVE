@@ -119,7 +119,34 @@ export default function App() {
       return <AccessRequired />;
     }
 
-    // State: authenticated-no-tenant
+    // State B: authenticated, multi-membership, no active tenant selected yet
+    if (s.tenantSelectionRequired || (s.tenantOptions && s.tenantOptions.length > 1 && !s.actor.orgId)) {
+      return (
+        <main className="marketing" style={{display:'grid',placeItems:'center',minHeight:'100vh',textAlign:'center',padding:24}}>
+          <div style={{maxWidth:520}}>
+            <h2 style={{fontSize:24,color:'#fff',marginBottom:8}}>Pilih Organisasi</h2>
+            <p style={{color:'#888',marginBottom:24}}>
+              Anda terdaftar sebagai anggota beberapa organisasi. Pilih organisasi yang ingin Anda akses saat ini.
+            </p>
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+              {s.tenantOptions.map(opt => (
+                <button
+                  key={opt.orgId}
+                  className="btn btn-white"
+                  style={{textAlign:'left',padding:'12px 16px'}}
+                  onClick={() => s.selectTenant(opt.orgId)}
+                >
+                  <strong>{opt.displayName || opt.legalName}</strong>
+                  <span style={{marginLeft:8,fontSize:12,color:'#888'}}>{opt.role}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </main>
+      );
+    }
+
+    // State A: authenticated, zero tenant memberships → onboarding
     if (!s.actor.orgId) {
       if (s.actor.isPlatformAdmin) {
         return (

@@ -38,7 +38,17 @@ webhooksRoute.post('/webhooks/mayar', async (c) => {
     return c.json({success: false, error: 'Payload webhook tidak valid.'}, 400);
   }
 
-  const result = await MayarService.handleWebhook(body);
+  const result = await MayarService.handleWebhook(body).catch((err: Error) => {
+    // Persistence failure — return 5xx so provider (Mayar) can retry
+    return null;
+  });
+
+  if (!result) {
+    return c.json({
+      success: false,
+      error: 'Gagal memproses settlement. Entitlement persistence gagal — silakan retry.'
+    }, 500);
+  }
 
   return c.json({
     success: true,

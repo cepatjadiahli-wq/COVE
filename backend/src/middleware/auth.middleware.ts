@@ -51,8 +51,18 @@ export async function requireAuth(c: Context, next: Next) {
   const authUserId = verification.user.id;
   const identityRepo = getIdentityRepository();
 
-  // 1. Resolve Profile from PostgreSQL (Bootstrap automatically if fresh user)
-  let profile = await identityRepo.findProfileByAuthUserId(authUserId);
+  // 1. Resolve Profile — check for ANY profile first (including SUSPENDED)
+  const profileAny = await identityRepo.findProfileByAuthUserIdAny(authUserId);
+  if (profileAny && profileAny.status !== 'ACTIVE') {
+    // Profile exists but is not ACTIVE (e.g. SUSPENDED) — deny access, do NOT re-activate
+    return c.json({
+      success: false,
+      code: 'ACCOUNT_SUSPENDED',
+      error: 'Akun ini telah dinonaktifkan. Hubungi administrator platform.'
+    }, 403);
+  }
+
+  let profile = profileAny; // ACTIVE profile found above, or null if truly new
   if (!profile) {
     profile = await identityRepo.ensureProfileForAuthUser(
       authUserId,
@@ -64,6 +74,14 @@ export async function requireAuth(c: Context, next: Next) {
     return c.json({
       success: false,
       error: 'Profil pengguna tidak ditemukan atau akun dinonaktifkan.'
+    }, 403);
+  }
+  // Final ACTIVE check after bootstrap (in case bootstrap returned an existing non-ACTIVE row)
+  if (profile.status !== 'ACTIVE') {
+    return c.json({
+      success: false,
+      code: 'ACCOUNT_SUSPENDED',
+      error: 'Akun ini telah dinonaktifkan. Hubungi administrator platform.'
     }, 403);
   }
 

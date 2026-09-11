@@ -61,7 +61,8 @@ before(() => {
     { id: 'prof-005', authUserId: 'usr-auth-004', fullName: 'Bambang Auditor', status: 'ACTIVE' },
     { id: 'prof-006', authUserId: 'usr-auth-org2', fullName: 'Joko Rahasia', status: 'ACTIVE' },
     { id: 'prof-multi', authUserId: 'usr-auth-multi', fullName: 'Multi Member', status: 'ACTIVE' },
-    { id: 'prof-onboarding', authUserId: 'usr-auth-onboarding', fullName: 'Calon Pendiri', status: 'ACTIVE' }
+    { id: 'prof-onboarding', authUserId: 'usr-auth-onboarding', fullName: 'Calon Pendiri', status: 'ACTIVE' },
+    { id: 'prof-suspended', authUserId: 'usr-auth-suspended-999', fullName: 'Suspended User', status: 'SUSPENDED' }
   ];
 
   // Seed test canonical memberships
@@ -119,6 +120,9 @@ before(() => {
     }
     if (token === 'token-no-org') {
       return {user: {id: 'usr-auth-no-org-101', email: 'noorg@cove.id', user_metadata: {full_name: 'No Org User'}}, error: null};
+    }
+    if (token === 'token-suspended') {
+      return {user: {id: 'usr-auth-suspended-999', email: 'suspended@cove.id', user_metadata: {full_name: 'Suspended User'}}, error: null};
     }
     return {user: null, error: 'Token otentikasi tidak valid atau sudah kedaluwarsa.'};
   });
@@ -1492,4 +1496,177 @@ test('AUTH-55: Production DataStore initialization starts empty without demo dat
   }
 });
 
+test('AUTH-56: Suspended profile cannot access API, cannot be re-activated, returns HTTP 403', async () => {
+  // User usr-auth-suspended-999 has status SUSPENDED in testRepo
+  const res = await app.request('/api/auth/me', {
+    headers: { Authorization: 'Bearer token-suspended' }
+  });
+  assert.strictEqual(res.status, 403, 'Suspended profile must return HTTP 403');
+  const body = await res.json();
+  assert.strictEqual(body.success, false);
+  assert.strictEqual(body.code, 'ACCOUNT_SUSPENDED');
 
+  // Verify profile remains SUSPENDED in repository (not reactivated or overwritten)
+  const prof = await testRepo.findProfileByAuthUserIdAny('usr-auth-suspended-999');
+  assert.strictEqual(prof?.status, 'SUSPENDED', 'Profile status must remain SUSPENDED in database');
+});
+
+test('AUTH-57: Multi-tenant frontend logic routes to tenant selection UI, not onboarding', () => {
+  const appFile = fs.readFileSync(path.resolve(__dirname, '../../frontend/app/App.tsx'), 'utf-8');
+  // Must check tenantSelectionRequired BEFORE checking !s.actor.orgId for onboarding within customer workspace guard
+  const workspaceGuardStart = appFile.indexOf('// Customer Workspace Routes');
+  assert.ok(workspaceGuardStart > -1, 'App.tsx must have customer workspace guard');
+  const workspaceGuard = appFile.slice(workspaceGuardStart);
+
+  const selIndex = workspaceGuard.indexOf('s.tenantSelectionRequired');
+  const onbIndex = workspaceGuard.indexOf('OnboardingCompanyPage');
+  assert.ok(selIndex > -1, 'Workspace guard must check s.tenantSelectionRequired');
+  assert.ok(selIndex < onbIndex, 's.tenantSelectionRequired must be checked before OnboardingCompanyPage in workspace guard');
+  assert.ok(workspaceGuard.includes('Pilih Organisasi'), 'App.tsx must include Pilih Organisasi UI');
+});
+
+test('AUTH-58: Tenant selection updates active organization and sets header capability', () => {
+  const storeFile = fs.readFileSync(path.resolve(__dirname, '../../frontend/lib/store.tsx'), 'utf-8');
+  assert.ok(storeFile.includes('setActiveOrganizationId(orgId)'), 'selectTenant must call setActiveOrganizationId');
+  assert.ok(storeFile.includes('setSelectedTenantId(orgId)'), 'selectTenant must update selectedTenantId');
+  assert.ok(storeFile.includes('setTenantSelectionRequired(false)'), 'selectTenant must dismiss tenant selection flag');
+
+  const apiFile = fs.readFileSync(path.resolve(__dirname, '../../frontend/lib/api.ts'), 'utf-8');
+  assert.ok(apiFile.includes("'x-organization-id': activeOrgId"), 'api.ts must pass x-organization-id header');
+});
+
+test('AUTH-59: Zero-membership authenticated user routes to onboarding', () => {
+  const appFile = fs.readFileSync(path.resolve(__dirname, '../../frontend/app/App.tsx'), 'utf-8');
+  assert.ok(appFile.includes('<OnboardingCompanyPage />'), 'App.tsx must route zero-membership user to OnboardingCompanyPage');
+});
+
+test('AUTH-60: Logout clears active tenant context, selectedTenantId, and localStorage', () => {
+  const storeFile = fs.readFileSync(path.resolve(__dirname, '../../frontend/lib/store.tsx'), 'utf-8');
+  assert.ok(storeFile.includes('clearTenantSessionState'), 'store.tsx must have clearTenantSessionState');
+  assert.ok(storeFile.includes('setActiveOrganizationId(null)'), 'clearTenantSessionState must call setActiveOrganizationId(null)');
+  assert.ok(storeFile.includes('setSelectedTenantId(null)'), 'clearTenantSessionState must set selectedTenantId to null');
+  assert.ok(storeFile.includes('setTenantOptions([])'), 'clearTenantSessionState must clear tenant options');
+
+  const apiFile = fs.readFileSync(path.resolve(__dirname, '../../frontend/lib/api.ts'), 'utf-8');
+  assert.ok(apiFile.includes("localStorage.removeItem('cove_active_org_id')"), 'setActiveOrganizationId(null) must remove localStorage key');
+});
+
+test('AUTH-61: No stale tenant context crosses accounts on auth change', () => {
+  const storeFile = fs.readFileSync(path.resolve(__dirname, '../../frontend/lib/store.tsx'), 'utf-8');
+  assert.ok(storeFile.includes('clearTenantSessionState()'), 'onAuthStateChange must invoke clearTenantSessionState on signed out');
+});
+
+test('AUTH-62: Legacy pay_001 compatibility path is blocked in production mode', async () => {
+  const savedEnv = process.env.NODE_ENV;
+  try {
+    process.env.NODE_ENV = 'production';
+    const payload = {
+      event: 'payment.settled',
+      id: `evt_prod_test_${Date.now()}`,
+      data: {
+        id: 'pay_001',
+        customer_name: 'PT Ruang Karya Konstruksi',
+        amount: 4900000,
+        status: 'PAID'
+      }
+    };
+    const res = await MayarService.handleWebhook(payload);
+    assert.strictEqual(res.status, 'IGNORED', 'Legacy pay_001 without checkout session must be IGNORED in production');
+  } finally {
+    process.env.NODE_ENV = savedEnv;
+  }
+});
+
+test('AUTH-63: Subscription upsert without explicit status does not become ACTIVE', async () => {
+  const sub = await testRepo.upsertSubscription('org-test-inactive', { planId: 'core' });
+  assert.notStrictEqual(sub.status, 'ACTIVE', 'Subscription without explicit status must not default to ACTIVE');
+  assert.strictEqual(sub.status, 'INACTIVE', 'Default subscription status must be INACTIVE');
+});
+
+test('AUTH-64: Entitlement DB failure does not return PROCESSED (fail-closed)', async () => {
+  // Test webhook endpoint returns 500 when settlement throws
+  const checkoutRef = 'chk-db-failure-test';
+  await testRepo.createCheckoutSession({
+    organizationId: 'org-001',
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR'
+  });
+
+  // Temporarily force updateCheckoutSessionStatus to throw
+  const originalUpdate = testRepo.updateCheckoutSessionStatus;
+  testRepo.updateCheckoutSessionStatus = async () => {
+    throw new Error('DATABASE CRITICAL ERROR ON SETTLEMENT');
+  };
+
+  try {
+    const res = await app.request('/api/webhooks/mayar', {
+      method: 'POST',
+      headers: {
+        'x-callback-token': config.mayarWebhookSecret,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        event: 'payment.settled',
+        id: `evt_fail_test_${Date.now()}`,
+        data: {
+          id: checkoutRef,
+          amount: 4900000,
+          status: 'PAID'
+        }
+      })
+    });
+    assert.strictEqual(res.status, 500, 'Endpoint must return HTTP 500 when settlement throws');
+    const body = await res.json();
+    assert.strictEqual(body.success, false);
+  } finally {
+    testRepo.updateCheckoutSessionStatus = originalUpdate;
+  }
+});
+
+test('AUTH-65: Settlement failure keeps subscription unchanged', async () => {
+  const checkoutRef = 'chk-rollback-test';
+  const orgId = 'org-002';
+
+  // Ensure subscription is INACTIVE initially
+  await testRepo.upsertSubscription(orgId, { status: 'INACTIVE', planId: 'core' });
+
+  await testRepo.createCheckoutSession({
+    organizationId: orgId,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR'
+  });
+
+  // Break upsertSubscription to simulate failure after step 1
+  const originalUpsert = testRepo.upsertSubscription;
+  testRepo.upsertSubscription = async () => {
+    throw new Error('SUBSCRIPTION PERSISTENCE FAILURE');
+  };
+
+  try {
+    await assert.rejects(async () => {
+      await MayarService.handleWebhook({
+        event: 'payment.settled',
+        id: `evt_sub_fail_${Date.now()}`,
+        data: {
+          id: checkoutRef,
+          amount: 4900000,
+          status: 'PAID'
+        }
+      });
+    }, /SUBSCRIPTION PERSISTENCE FAILURE/);
+
+    // Verify subscription status is still INACTIVE
+    const currentSub = await testRepo.getSubscriptionByOrgId(orgId);
+    assert.strictEqual(currentSub?.status, 'INACTIVE', 'Subscription must remain INACTIVE on settlement failure');
+  } finally {
+    testRepo.upsertSubscription = originalUpsert;
+  }
+});
