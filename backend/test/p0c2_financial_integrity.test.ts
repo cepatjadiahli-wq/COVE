@@ -624,9 +624,10 @@ test('P0C2R-17: unevidenced status synonyms paid and success are rejected (fail 
 });
 
 // ----------------------------------------------------------------------------
-// P0C2R-18: authenticated role has SELECT grant on billing_payments & anomalies
+// P0C2R-18 (updated by P0-C2.2): authenticated role SELECT on billing_payments is retained;
+//           SELECT on billing_payment_anomalies is REVOKED (internal operator table only)
 // ----------------------------------------------------------------------------
-test('P0C2R-18: authenticated role has SELECT grant on billing_payments and billing_payment_anomalies', async () => {
+test('P0C2R-18: authenticated has SELECT on billing_payments but NOT on billing_payment_anomalies', async () => {
   const permRes = await pglite.query<{ table_name: string; privilege_type: string }>(
     `SELECT table_name, privilege_type
      FROM information_schema.role_table_grants
@@ -636,8 +637,11 @@ test('P0C2R-18: authenticated role has SELECT grant on billing_payments and bill
   );
 
   const tables = permRes.rows.map(r => r.table_name);
-  assert.ok(tables.includes('billing_payments'), 'authenticated must have SELECT on billing_payments');
-  assert.ok(tables.includes('billing_payment_anomalies'), 'authenticated must have SELECT on billing_payment_anomalies');
+  assert.ok(tables.includes('billing_payments'), 'authenticated must retain SELECT on billing_payments');
+  assert.ok(
+    !tables.includes('billing_payment_anomalies'),
+    'authenticated must NOT have SELECT on billing_payment_anomalies (revoked by migration 017 — internal operator table only)'
+  );
 });
 
 // ----------------------------------------------------------------------------

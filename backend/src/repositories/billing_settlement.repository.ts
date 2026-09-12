@@ -1,5 +1,6 @@
+import crypto from 'crypto';
 // ============================================================================
-// COVE Backend — Canonical Billing Settlement Repository (Gate P0-C.2 / P0-C.2.1)
+// COVE Backend — Canonical Billing Settlement Repository (Gate P0-C.2 / P0-C.2.1 / P0-C.2.2)
 // Acuan: COVE_PRD_v2.0_Product_End_State.md §7, COVE_ERD_v2.0_Logical_Data_Model.md §2, §9
 // Ensures single ACID transaction for:
 // - Locking checkout session
@@ -65,35 +66,49 @@ export interface IBillingSettlementRepository {
  * - 'YEARLY': baseDate + 1 UTC calendar year (with leap year clamp, e.g. Feb 29 -> Feb 28)
  * - 'MONTHLY' (default): baseDate + 1 UTC calendar month (with end-of-month clamp, e.g. Jan 31 -> Feb 28/29)
  */
+export class UnsupportedBillingPeriodError extends Error {
+  constructor(period: any) {
+    super(`Unsupported billing period: ${period}. Allowed values are '45_DAYS', 'MONTHLY', 'YEARLY'.`);
+    this.name = 'UnsupportedBillingPeriodError';
+  }
+}
+
 export function calculatePeriodEnd(baseDate: Date, billingPeriod?: string | null): Date {
-  const normPeriod = (billingPeriod || 'MONTHLY').toUpperCase().trim();
-  if (normPeriod === '45_DAYS') {
-    return new Date(baseDate.getTime() + 45 * 24 * 3600 * 1000);
-  } else if (normPeriod === 'YEARLY') {
-    const d = new Date(baseDate);
-    const targetYear = d.getUTCFullYear() + 1;
-    const targetMonth = d.getUTCMonth();
-    const originalDay = d.getUTCDate();
-    const isLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || (targetYear % 400 === 0);
-    const daysInMonths = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    const maxDay = daysInMonths[targetMonth];
-    d.setUTCFullYear(targetYear, targetMonth, Math.min(originalDay, maxDay));
-    return d;
-  } else {
-    // MONTHLY or default
-    const d = new Date(baseDate);
-    let targetYear = d.getUTCFullYear();
-    let targetMonth = d.getUTCMonth() + 1;
-    if (targetMonth > 11) {
-      targetMonth = 0;
-      targetYear += 1;
+  if (!billingPeriod || typeof billingPeriod !== 'string' || !billingPeriod.trim()) {
+    throw new UnsupportedBillingPeriodError(billingPeriod);
+  }
+  const normPeriod = billingPeriod.toUpperCase().trim();
+  switch (normPeriod) {
+    case '45_DAYS':
+      return new Date(baseDate.getTime() + 45 * 24 * 3600 * 1000);
+    case 'MONTHLY': {
+      const d = new Date(baseDate);
+      let targetYear = d.getUTCFullYear();
+      let targetMonth = d.getUTCMonth() + 1;
+      if (targetMonth > 11) {
+        targetMonth = 0;
+        targetYear += 1;
+      }
+      const originalDay = d.getUTCDate();
+      const isLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || (targetYear % 400 === 0);
+      const daysInMonths = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      const maxDay = daysInMonths[targetMonth];
+      d.setUTCFullYear(targetYear, targetMonth, Math.min(originalDay, maxDay));
+      return d;
     }
-    const originalDay = d.getUTCDate();
-    const isLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || (targetYear % 400 === 0);
-    const daysInMonths = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    const maxDay = daysInMonths[targetMonth];
-    d.setUTCFullYear(targetYear, targetMonth, Math.min(originalDay, maxDay));
-    return d;
+    case 'YEARLY': {
+      const d = new Date(baseDate);
+      const targetYear = d.getUTCFullYear() + 1;
+      const targetMonth = d.getUTCMonth();
+      const originalDay = d.getUTCDate();
+      const isLeap = (targetYear % 4 === 0 && targetYear % 100 !== 0) || (targetYear % 400 === 0);
+      const daysInMonths = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      const maxDay = daysInMonths[targetMonth];
+      d.setUTCFullYear(targetYear, targetMonth, Math.min(originalDay, maxDay));
+      return d;
+    }
+    default:
+      throw new UnsupportedBillingPeriodError(billingPeriod);
   }
 }
 
@@ -221,11 +236,17 @@ export class PostgresBillingSettlementRepository implements IBillingSettlementRe
         else if (!amountMatches) conflictType = 'AMOUNT_MISMATCH';
         else if (!currencyMatches) conflictType = 'CURRENCY_MISMATCH';
 
+        // F-06.4: Deterministic fingerprint for deduplication of repeated conflict replays
+        const fingerprintRaw = `${providerName}:${providerPaymentId}:${existingPay.id}:${conflictType}:${parseMoney(params.amount)}:${(params.currency || 'IDR').toUpperCase()}:${params.checkoutReference}`;
+        const conflictFingerprint = crypto.createHash('sha256').update(fingerprintRaw).digest('hex');
+
         const anomRes = await client.query(
           `INSERT INTO public.billing_payment_anomalies (
              provider, provider_payment_id, existing_payment_id, provider_event_id,
-             conflict_type, incoming_amount, incoming_currency, incoming_checkout_reference, details
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             conflict_type, incoming_amount, incoming_currency, incoming_checkout_reference,
+             details, conflict_fingerprint
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT (conflict_fingerprint) DO NOTHING
            RETURNING id`,
           [
             providerName,
@@ -251,7 +272,8 @@ export class PostgresBillingSettlementRepository implements IBillingSettlementRe
                 amount: params.amount,
                 currency: params.currency
               }
-            })
+            }),
+            conflictFingerprint
           ]
         );
 
@@ -263,9 +285,40 @@ export class PostgresBillingSettlementRepository implements IBillingSettlementRe
         };
       }
 
-      // 5. Handle already-paid checkout session
+      // 5. (F-06.3) Economic validation MUST precede PAID-checkout classification
+      //    so invalid currency/amount is REJECTED, not misclassified as OVERPAYMENT_REVIEW.
+
+      // 5a. Validate currency (case-insensitive) against canonical session
+      if ((params.currency || 'IDR').toUpperCase() !== (session.currency || 'IDR').toUpperCase()) {
+        await client.query('ROLLBACK');
+        return {
+          status: 'REJECTED',
+          message: `Mata uang tidak sesuai: diharapkan ${session.currency}, diterima ${params.currency}`
+        };
+      }
+
+      // 5b. Validate exact money amount against canonical session
+      try {
+        const expectedMinor = parseMoneyToMinorUnits(session.amount);
+        const paidMinor = parseMoneyToMinorUnits(params.amount);
+        if (expectedMinor !== paidMinor) {
+          await client.query('ROLLBACK');
+          return {
+            status: 'REJECTED',
+            message: `Jumlah pembayaran tidak sesuai: diharapkan ${session.amount}, diterima ${params.amount}`
+          };
+        }
+      } catch (err: any) {
+        await client.query('ROLLBACK');
+        return {
+          status: 'REJECTED',
+          message: `Format nilai pembayaran tidak valid: ${err.message}`
+        };
+      }
+
+      // 6. Handle already-paid checkout session (post-economic-validation)
       if (session.status === 'PAID') {
-        // Distinct new payment on an already-settled checkout -> OVERPAYMENT_REVIEW
+        // Distinct new payment on an already-settled checkout → OVERPAYMENT_REVIEW
         const opRes = await client.query(
           `INSERT INTO public.billing_payments (
              organization_id, checkout_session_id, provider, provider_payment_id,
@@ -294,7 +347,7 @@ export class PostgresBillingSettlementRepository implements IBillingSettlementRe
         };
       }
 
-      // 6. Validate session status is PENDING
+      // 7. Validate session status is PENDING
       if (session.status !== 'PENDING') {
         await client.query('ROLLBACK');
         return {
@@ -303,40 +356,19 @@ export class PostgresBillingSettlementRepository implements IBillingSettlementRe
         };
       }
 
-      // 7. Validate currency (case-insensitive)
-      if ((params.currency || 'IDR').toUpperCase() !== (session.currency || 'IDR').toUpperCase()) {
-        await client.query('ROLLBACK');
-        return {
-          status: 'REJECTED',
-          message: `Mata uang tidak sesuai: diharapkan ${session.currency}, diterima ${params.currency}`
-        };
-      }
-
-      // 8. Validate exact money amount
-      try {
-        const expectedMinor = parseMoneyToMinorUnits(session.amount);
-        const paidMinor = parseMoneyToMinorUnits(params.amount);
-        if (expectedMinor !== paidMinor) {
-          await client.query('ROLLBACK');
-          return {
-            status: 'REJECTED',
-            message: `Jumlah pembayaran tidak sesuai: diharapkan ${session.amount}, diterima ${params.amount}`
-          };
-        }
-      } catch (err: any) {
-        await client.query('ROLLBACK');
-        return {
-          status: 'REJECTED',
-          message: `Format nilai pembayaran tidak valid: ${err.message}`
-        };
-      }
-
-      // 9. Fetch canonical plan definition for billing period
+      // 9. Fetch canonical plan definition for billing period (strictly required)
       const planRes = await client.query(
         `SELECT id, billing_period FROM public.plans WHERE id = $1 FOR UPDATE`,
         [session.plan || 'core']
       );
-      const planBillingPeriod = planRes.rows[0]?.billing_period || 'MONTHLY';
+      if (planRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return {
+          status: 'REJECTED',
+          message: `Plan '${session.plan}' tidak ditemukan dalam tabel canonical plans.`
+        };
+      }
+      const planBillingPeriod: string = planRes.rows[0]?.billing_period;
 
       // 10. Insert canonical payment record
       const payRes = await client.query(
@@ -409,7 +441,19 @@ export class PostgresBillingSettlementRepository implements IBillingSettlementRe
         }
       }
 
-      const newPeriodEndDate = calculatePeriodEnd(baseDate, planBillingPeriod);
+      let newPeriodEndDate: Date;
+      try {
+        newPeriodEndDate = calculatePeriodEnd(baseDate, planBillingPeriod);
+      } catch (err: any) {
+        await client.query('ROLLBACK');
+        if (err instanceof UnsupportedBillingPeriodError || err.name === 'UnsupportedBillingPeriodError') {
+          return {
+            status: 'REJECTED',
+            message: `Periode billing tidak valid untuk plan '${session.plan}': '${planBillingPeriod}'. Settlement dibatalkan.`
+          };
+        }
+        throw err;
+      }
       const newPeriodEnd = newPeriodEndDate.toISOString();
 
       // Failure injection 3
@@ -567,32 +611,64 @@ export class InMemoryBillingSettlementRepository implements IBillingSettlementRe
       else if (!amountMatches) conflictType = 'AMOUNT_MISMATCH';
       else if (!currencyMatches) conflictType = 'CURRENCY_MISMATCH';
 
-      const anomaly = {
-        id: `anom-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        provider: providerName,
-        providerPaymentId,
-        existingPaymentId: existingPayment.id,
-        providerEventId: params.providerEventId || null,
-        conflictType,
-        incomingAmount: parseMoney(params.amount),
-        incomingCurrency: (params.currency || 'IDR').toUpperCase(),
-        incomingCheckoutReference: params.checkoutReference,
-        details: {
-          existing: { ...existingPayment },
-          incoming: { organizationId: session.organizationId, checkoutSessionId: session.id, amount: params.amount, currency: params.currency }
-        },
-        createdAt: new Date().toISOString()
-      };
-      this.anomalies.push(anomaly);
+      // F-06.4: Deterministic fingerprint for deduplication
+      const fingerprintRaw = `${providerName}:${providerPaymentId}:${existingPayment.id}:${conflictType}:${parseMoney(params.amount)}:${(params.currency || 'IDR').toUpperCase()}:${params.checkoutReference}`;
+      const conflictFingerprint = crypto.createHash('sha256').update(fingerprintRaw).digest('hex');
+
+      const existingAnomaly = this.anomalies.find(a => (a as any).conflictFingerprint === conflictFingerprint);
+      if (!existingAnomaly) {
+        const anomaly = {
+          id: `anom-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          provider: providerName,
+          providerPaymentId,
+          existingPaymentId: existingPayment.id,
+          providerEventId: params.providerEventId || null,
+          conflictType,
+          incomingAmount: parseMoney(params.amount),
+          incomingCurrency: (params.currency || 'IDR').toUpperCase(),
+          incomingCheckoutReference: params.checkoutReference,
+          details: {
+            existing: { ...existingPayment },
+            incoming: { organizationId: session.organizationId, checkoutSessionId: session.id, amount: params.amount, currency: params.currency }
+          },
+          conflictFingerprint,
+          createdAt: new Date().toISOString()
+        };
+        this.anomalies.push(anomaly);
+      }
 
       return {
         status: 'PAYMENT_CONFLICT',
         message: `Economic conflict detected for payment ID ${providerPaymentId}: ${conflictType}`,
-        anomalyId: anomaly.id
+        anomalyId: existingAnomaly?.id ?? this.anomalies[this.anomalies.length - 1]?.id
       };
     }
 
-    // Handle session already PAID
+    // (F-06.3) Economic validation MUST precede PAID-checkout classification
+    if ((params.currency || 'IDR').toUpperCase() !== (session.currency || 'IDR').toUpperCase()) {
+      return {
+        status: 'REJECTED',
+        message: `Mata uang tidak sesuai: diharapkan ${session.currency}, diterima ${params.currency}`
+      };
+    }
+
+    try {
+      const expectedMinor = parseMoneyToMinorUnits(session.amount);
+      const paidMinor = parseMoneyToMinorUnits(params.amount);
+      if (expectedMinor !== paidMinor) {
+        return {
+          status: 'REJECTED',
+          message: `Jumlah pembayaran tidak sesuai: diharapkan ${session.amount}, diterima ${params.amount}`
+        };
+      }
+    } catch (err: any) {
+      return {
+        status: 'REJECTED',
+        message: `Format nilai pembayaran tidak valid: ${err.message}`
+      };
+    }
+
+    // Handle session already PAID (post-economic-validation)
     if (session.status === 'PAID') {
       const paymentRecord: BillingPaymentEntity = {
         id: `bp-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -622,29 +698,6 @@ export class InMemoryBillingSettlementRepository implements IBillingSettlementRe
       return {
         status: 'REJECTED',
         message: `Status checkout session adalah ${session.status} (bukan PENDING). Settlement ditolak.`
-      };
-    }
-
-    if ((params.currency || 'IDR').toUpperCase() !== (session.currency || 'IDR').toUpperCase()) {
-      return {
-        status: 'REJECTED',
-        message: `Mata uang tidak sesuai: diharapkan ${session.currency}, diterima ${params.currency}`
-      };
-    }
-
-    try {
-      const expectedMinor = parseMoneyToMinorUnits(session.amount);
-      const paidMinor = parseMoneyToMinorUnits(params.amount);
-      if (expectedMinor !== paidMinor) {
-        return {
-          status: 'REJECTED',
-          message: `Jumlah pembayaran tidak sesuai: diharapkan ${session.amount}, diterima ${params.amount}`
-        };
-      }
-    } catch (err: any) {
-      return {
-        status: 'REJECTED',
-        message: `Format nilai pembayaran tidak valid: ${err.message}`
       };
     }
 
@@ -686,11 +739,19 @@ export class InMemoryBillingSettlementRepository implements IBillingSettlementRe
         throw new Error('SIMULATED_FAILURE: after_checkout_update');
       }
 
-      // 3. Determine plan billing period
+      // 3. Determine plan billing period from canonical plan map (F-06.2: fail-closed)
       const planId = (session.plan || 'core').toLowerCase().trim();
-      let billingPeriod = 'MONTHLY';
-      if (planId === 'pilot') billingPeriod = '45_DAYS';
-      else if (planId === 'enterprise') billingPeriod = 'YEARLY';
+      const CANONICAL_PLAN_PERIODS: Record<string, string> = {
+        pilot: '45_DAYS',
+        core: 'MONTHLY',
+        pro: 'MONTHLY',
+        scale: 'MONTHLY',
+        enterprise: 'YEARLY'
+      };
+      const billingPeriod: string | undefined = CANONICAL_PLAN_PERIODS[planId];
+      if (!billingPeriod) {
+        throw new UnsupportedBillingPeriodError(undefined);
+      }
 
       // 4. Upsert subscription
       const now = new Date();
