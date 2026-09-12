@@ -1616,7 +1616,7 @@ test('AUTH-64: Entitlement DB failure does not return PROCESSED (fail-closed)', 
         data: {
           id: checkoutRef,
           amount: 4900000,
-          status: 'PAID'
+          status: 'settled'
         }
       })
     });
@@ -1659,7 +1659,7 @@ test('AUTH-65: Settlement failure keeps subscription unchanged', async () => {
         data: {
           id: checkoutRef,
           amount: 4900000,
-          status: 'PAID'
+          status: 'settled'
         }
       });
     }, /SUBSCRIPTION PERSISTENCE FAILURE/);

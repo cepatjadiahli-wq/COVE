@@ -303,6 +303,13 @@ export class MayarService {
           };
         }
 
+        if (settlementResult.status === 'PAYMENT_CONFLICT') {
+          return {
+            status: 'CONFLICT',
+            message: settlementResult.message
+          };
+        }
+
         if (settlementResult.status === 'DUPLICATE') {
           const recRes = await webhookRepo.recordWebhookEvent({
             eventId,

@@ -29,7 +29,8 @@ export const CANONICAL_MIGRATION_ORDER = [
   '012_p0b4_action_persistence.sql',
   '013_p0c1_mayar_webhook_security.sql',
   '014_p0c1_webhook_conflict_hardening.sql',
-  '015_p0c2_atomic_billing_settlement.sql'
+  '015_p0c2_atomic_billing_settlement.sql',
+  '016_p0c2_financial_integrity_hardening.sql'
 ] as const;
 
 export function getDiscoveredMigrations(): string[] {

@@ -802,9 +802,14 @@ test('P0C2-17: concurrent different payments same checkout do not double activat
   const statuses = [resA.status, resB.status].sort();
   assert.deepStrictEqual(statuses, ['DUPLICATE', 'PROCESSED']);
 
-  // Exactly one payment inserted
-  const pays = await pglite.query(`SELECT id FROM public.billing_payments WHERE organization_id = $1`, [orgId]);
-  assert.strictEqual(pays.rows.length, 1);
+  // P1-03: First payment is SETTLED, concurrent second distinct payment is recorded as OVERPAYMENT_REVIEW
+  const pays = await pglite.query<{ status: string }>(`SELECT status FROM public.billing_payments WHERE organization_id = $1 ORDER BY status ASC`, [orgId]);
+  assert.strictEqual(pays.rows.length, 2);
+  assert.deepStrictEqual(pays.rows.map(r => r.status), ['OVERPAYMENT_REVIEW', 'SETTLED']);
+
+  // Exactly one subscription created (no double activation)
+  const subs = await pglite.query(`SELECT id FROM public.subscriptions WHERE org_id = $1`, [orgId]);
+  assert.strictEqual(subs.rows.length, 1);
 });
 
 // ----------------------------------------------------------------------------
