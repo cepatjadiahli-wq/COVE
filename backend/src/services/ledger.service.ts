@@ -301,6 +301,7 @@ export class LedgerService {
           await ledgerRepo.createCashReceipt({
             orgId,
             projectId,
+            idempotencyKey: `mutation-${orgId}-${projectId}-${reference || Date.now()}`,
             receiptNumber: reference,
             receivedAmount: amount,
             description: reason,

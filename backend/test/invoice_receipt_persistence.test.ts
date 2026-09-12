@@ -405,6 +405,7 @@ test('P0B3-10: Cash receipt persists in PostgreSQL', async () => {
   const rcpt = await pgLedgerRepo.createCashReceipt({
     orgId: ORG_A_ID,
     projectId: PROJ_A_1,
+    idempotencyKey: 'IDEM-P0B3-10',
     receiptNumber: 'RCPT-ALFA-01',
     receivedAmount: '100000000.00',
     bankReference: 'BCA-TX-001',
@@ -458,6 +459,7 @@ test('P0B3-13: Invoice partial collection succeeds', async () => {
   const rcpt2 = await pgLedgerRepo.createCashReceipt({
     orgId: ORG_A_ID,
     projectId: PROJ_A_1,
+    idempotencyKey: 'IDEM-P0B3-13',
     receiptNumber: 'RCPT-ALFA-02',
     receivedAmount: '50000000.00',
     allocations: [
@@ -481,6 +483,7 @@ test('P0B3-14: Invoice over-collection rejected', async () => {
     await pgLedgerRepo.createCashReceipt({
       orgId: ORG_A_ID,
       projectId: PROJ_A_1,
+      idempotencyKey: 'IDEM-P0B3-14',
       receivedAmount: '200000000.00',
       allocations: [
         { invoiceId: testInvoiceA1Id, amount: '200000000.00' }
@@ -498,6 +501,7 @@ test('P0B3-15: Receipt over-allocation rejected (allocations > received amount)'
     await pgLedgerRepo.createCashReceipt({
       orgId: ORG_A_ID,
       projectId: PROJ_A_1,
+      idempotencyKey: 'IDEM-P0B3-15',
       receivedAmount: '50000000.00',
       allocations: [
         { invoiceId: testInvoiceA1Id, amount: '100000000.00' }
@@ -517,6 +521,7 @@ test('P0B3-16: 1 Receipt to N Invoices allocations succeed', async () => {
   const multiRcpt = await pgLedgerRepo.createCashReceipt({
     orgId: ORG_A_ID,
     projectId: PROJ_A_1,
+    idempotencyKey: 'IDEM-P0B3-16',
     receiptNumber: 'RCPT-ALFA-MULTI',
     receivedAmount: '200000000.00',
     allocations: [
@@ -536,6 +541,7 @@ test('P0B3-17: N Receipts to 1 Invoice allocations succeed', async () => {
   const finalRcpt = await pgLedgerRepo.createCashReceipt({
     orgId: ORG_A_ID,
     projectId: PROJ_A_1,
+    idempotencyKey: 'IDEM-P0B3-17',
     receiptNumber: 'RCPT-ALFA-FINAL',
     receivedAmount: '50000000.00',
     allocations: [
@@ -636,6 +642,7 @@ test('P0B3-26: Cross-tenant invoice-to-receipt allocation rejected', async () =>
     await pgLedgerRepo.createCashReceipt({
       orgId: ORG_B_ID,
       projectId: PROJ_B_1,
+      idempotencyKey: 'IDEM-P0B3-26',
       receivedAmount: '10000000.00',
       allocations: [
         { invoiceId: testInvoiceA1Id, amount: '10000000.00' }
@@ -668,6 +675,7 @@ test('P0B3-28: Guessed invoice UUID from another tenant rejected', async () => {
     await pgLedgerRepo.createCashReceipt({
       orgId: ORG_A_ID,
       projectId: PROJ_A_1,
+      idempotencyKey: 'IDEM-P0B3-28',
       receivedAmount: '10000000.00',
       allocations: [
         { invoiceId: fakeInvId, amount: '10000000.00' }
@@ -710,6 +718,7 @@ test('P0B3-30: Concurrent invoice over-collection prevented (FOR UPDATE & trigge
   const promise1 = pgLedgerRepo.createCashReceipt({
     orgId: ORG_A_ID,
     projectId: PROJ_A_1,
+    idempotencyKey: 'IDEM-P0B3-30-1',
     receiptNumber: 'RCPT-CONCUR-1',
     receivedAmount: '70000000.00',
     allocations: [{ invoiceId: invMulti.id, amount: '70000000.00' }]
@@ -718,6 +727,7 @@ test('P0B3-30: Concurrent invoice over-collection prevented (FOR UPDATE & trigge
   const promise2 = pgLedgerRepo.createCashReceipt({
     orgId: ORG_A_ID,
     projectId: PROJ_A_1,
+    idempotencyKey: 'IDEM-P0B3-30-2',
     receiptNumber: 'RCPT-CONCUR-2',
     receivedAmount: '70000000.00',
     allocations: [{ invoiceId: invMulti.id, amount: '70000000.00' }]
@@ -763,6 +773,7 @@ test('P0B3-32: Failed receipt transaction leaves no partial records (atomicity)'
     await pgLedgerRepo.createCashReceipt({
       orgId: ORG_A_ID,
       projectId: PROJ_A_1,
+      idempotencyKey: 'IDEM-P0B3-32',
       receivedAmount: '1000.00',
       allocations: [
         { invoiceId: testInvoiceA1Id, amount: '50000000000.00' } // Exceeds unpaid principal
@@ -822,6 +833,7 @@ test('P0B3-33: Values exceeding JavaScript Number.MAX_SAFE_INTEGER retain exact 
   const highRcpt = await pgLedgerRepo.createCashReceipt({
     orgId: ORG_A_ID,
     projectId: PROJ_A_1,
+    idempotencyKey: 'IDEM-P0B3-33',
     receiptNumber: 'RCPT-MEGA-01',
     receivedAmount: highVal,
     allocations: [{ invoiceId: highInv.id, amount: highVal }]
@@ -862,6 +874,7 @@ test('P0B3-35: Archived project cannot receive new invoice or cash receipt', asy
     await pgLedgerRepo.createCashReceipt({
       orgId: ORG_A_ID,
       projectId: PROJ_A_ARCHIVED,
+      idempotencyKey: 'IDEM-P0B3-35',
       receivedAmount: '1000.00',
       allocations: [{ invoiceId: testInvoiceA1Id, amount: '1000.00' }]
     });

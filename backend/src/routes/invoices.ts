@@ -217,12 +217,26 @@ invoicesRoute.post('/invoices/receipts', async (c) => {
     ''
   ).trim();
 
+  if (!idempotencyKey) {
+    return c.json({
+      success: false,
+      error: 'IDEMPOTENCY_KEY_REQUIRED'
+    }, 400);
+  }
+
+  if (idempotencyKey.length > 120) {
+    return c.json({
+      success: false,
+      error: 'IDEMPOTENCY_KEY_TOO_LONG'
+    }, 400);
+  }
+
   try {
     const ledgerRepo = getLedgerRepository();
     const result = await ledgerRepo.createCashReceipt({
       orgId: actor.orgId,
       projectId,
-      idempotencyKey: idempotencyKey || undefined,
+      idempotencyKey,
       receivedAmount: rawAmount,
       receiptNumber: body.receiptNumber,
       receivedAt: body.receivedDate || body.receivedAt,
@@ -242,6 +256,9 @@ invoicesRoute.post('/invoices/receipts', async (c) => {
       }
     });
   } catch (err: any) {
+    if (err.statusCode === 409 && (err.message?.includes('RECEIPT_IDEMPOTENCY_CONFLICT') || err.message?.includes('idempotensi'))) {
+      return c.json({success: false, error: 'RECEIPT_IDEMPOTENCY_CONFLICT', message: err.message}, 409);
+    }
     const statusCode = err.statusCode || (err.message?.includes('sudah digunakan') ? 409 : 400);
     return c.json({success: false, error: err.message || 'Gagal mencatat penerimaan kas.'}, statusCode);
   }

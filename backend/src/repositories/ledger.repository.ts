@@ -264,7 +264,7 @@ export interface CreateProjectInvoiceInput {
 export interface CreateCashReceiptInput {
   orgId: string;
   projectId: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
   receiptNumber?: string;
   receivedAt?: string;
   bankReference?: string;
@@ -1581,20 +1581,17 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       throw err;
     }
 
-    const receiptNumber = (input.receiptNumber || '').trim();
-    if (receiptNumber) {
-      const dup = await this.pool.query(
-        `SELECT id FROM public.cash_receipts WHERE org_id = $1 AND project_id = $2 AND receipt_number = $3`,
-        [input.orgId, input.projectId, receiptNumber]
-      );
-      if (dup.rows.length > 0) {
-        const err: any = new Error('Nomor kuitansi sudah digunakan pada proyek ini.');
-        err.statusCode = 409;
-        throw err;
-      }
+    const idemKey = (input.idempotencyKey || '').trim();
+    if (!idemKey) {
+      const err: any = new Error('IDEMPOTENCY_KEY_REQUIRED');
+      err.statusCode = 400;
+      throw err;
     }
-
-    const idemKey = (input.idempotencyKey || '').trim() || crypto.randomUUID();
+    if (idemKey.length > 120) {
+      const err: any = new Error('IDEMPOTENCY_KEY_TOO_LONG');
+      err.statusCode = 400;
+      throw err;
+    }
 
     // Check if a receipt already exists for this (org_id, project_id, idempotency_key)
     const existingRes = await this.pool.query(
@@ -1626,7 +1623,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       }
 
       if (!amountMatches || !allocsMatch) {
-        const err: any = new Error('Kunci idempotensi sudah digunakan dengan data berbeda.');
+        const err: any = new Error('RECEIPT_IDEMPOTENCY_CONFLICT: Kunci idempotensi sudah digunakan dengan data berbeda.');
         err.statusCode = 409;
         throw err;
       }
@@ -1663,6 +1660,19 @@ export class PostgresLedgerRepository implements ILedgerRepository {
           createdAt: new Date(a.created_at).toISOString()
         }))
       };
+    }
+
+    const receiptNumber = (input.receiptNumber || '').trim();
+    if (receiptNumber) {
+      const dup = await this.pool.query(
+        `SELECT id FROM public.cash_receipts WHERE org_id = $1 AND project_id = $2 AND receipt_number = $3`,
+        [input.orgId, input.projectId, receiptNumber]
+      );
+      if (dup.rows.length > 0) {
+        const err: any = new Error('Nomor kuitansi sudah digunakan pada proyek ini.');
+        err.statusCode = 409;
+        throw err;
+      }
     }
 
     const releaseFns: (() => void)[] = [];
@@ -1831,8 +1841,80 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         updatedAt: new Date(rcptRow.updated_at).toISOString(),
         allocations: createdAllocations
       };
-    } catch (err) {
+    } catch (err: any) {
       await client.query('ROLLBACK');
+
+      // Concurrent unique-race handling on idempotency constraint (SQLSTATE 23505)
+      if (err?.code === '23505' && (err?.constraint === 'uq_cash_receipts_idempotency' || err?.message?.includes('uq_cash_receipts_idempotency') || err?.message?.includes('idempotency_key'))) {
+        const raceRes = await this.pool.query(
+          `SELECT * FROM public.cash_receipts WHERE org_id = $1 AND project_id = $2 AND idempotency_key = $3`,
+          [input.orgId, input.projectId, idemKey]
+        );
+        if (raceRes.rows.length > 0) {
+          const raceRow = raceRes.rows[0];
+          const raceAllocRes = await this.pool.query(
+            `SELECT * FROM public.receipt_allocations WHERE cash_receipt_id = $1 ORDER BY created_at ASC`,
+            [raceRow.id]
+          );
+
+          const raceReceived = parseMoney(raceRow.received_amount);
+          const amountMatches = compareMoney(raceReceived, parsedReceived) === 0;
+
+          let allocsMatch = raceAllocRes.rows.length === input.allocations.length;
+          if (allocsMatch) {
+            for (const alloc of input.allocations) {
+              const parsedAllocA = parseMoney(alloc.amount);
+              const match = raceAllocRes.rows.find(
+                r => r.project_invoice_id === alloc.invoiceId && compareMoney(parseMoney(r.allocated_amount), parsedAllocA) === 0
+              );
+              if (!match) {
+                allocsMatch = false;
+                break;
+              }
+            }
+          }
+
+          if (!amountMatches || !allocsMatch) {
+            const conflictErr: any = new Error('RECEIPT_IDEMPOTENCY_CONFLICT: Kunci idempotensi sudah digunakan dengan data berbeda.');
+            conflictErr.statusCode = 409;
+            throw conflictErr;
+          }
+
+          let raceAllocTotal = '0.00';
+          for (const r of raceAllocRes.rows) {
+            raceAllocTotal = addMoney(raceAllocTotal, parseMoney(r.allocated_amount));
+          }
+          const raceUnallocated = compareMoney(raceReceived, raceAllocTotal) > 0 ? subtractMoney(raceReceived, raceAllocTotal) : '0.00';
+
+          return {
+            id: raceRow.id,
+            orgId: raceRow.org_id,
+            projectId: raceRow.project_id,
+            idempotencyKey: raceRow.idempotency_key,
+            receiptNumber: raceRow.receipt_number || undefined,
+            receivedAt: raceRow.received_at,
+            bankReference: raceRow.bank_reference || '',
+            currency: raceRow.currency,
+            receivedAmount: raceReceived,
+            allocatedAmount: raceAllocTotal,
+            unallocatedAmount: raceUnallocated,
+            settlementStatus: raceRow.settlement_status,
+            paymentMethod: raceRow.payment_method,
+            description: raceRow.description || '',
+            notes: raceRow.notes || undefined,
+            createdAt: new Date(raceRow.created_at).toISOString(),
+            updatedAt: new Date(raceRow.updated_at).toISOString(),
+            allocations: raceAllocRes.rows.map(a => ({
+              id: a.id,
+              cashReceiptId: a.cash_receipt_id,
+              projectInvoiceId: a.project_invoice_id,
+              allocatedAmount: parseMoney(a.allocated_amount),
+              createdAt: new Date(a.created_at).toISOString()
+            }))
+          };
+        }
+      }
+
       throw err;
     } finally {
       releaseFns.forEach(fn => fn());
@@ -3224,17 +3306,18 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
       throw err;
     }
 
-    const rcptNumber = (input.receiptNumber || '').trim();
-    if (rcptNumber) {
-      const dup = this.cashReceipts.find(r => r.orgId === input.orgId && r.projectId === input.projectId && r.receiptNumber === rcptNumber);
-      if (dup) {
-        const err: any = new Error('Nomor kuitansi sudah digunakan pada proyek ini.');
-        err.statusCode = 409;
-        throw err;
-      }
+    const idemKey = (input.idempotencyKey || '').trim();
+    if (!idemKey) {
+      const err: any = new Error('IDEMPOTENCY_KEY_REQUIRED');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (idemKey.length > 120) {
+      const err: any = new Error('IDEMPOTENCY_KEY_TOO_LONG');
+      err.statusCode = 400;
+      throw err;
     }
 
-    const idemKey = (input.idempotencyKey || '').trim() || `idem-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const existing = this.cashReceipts.find(
       r => r.orgId === input.orgId && r.projectId === input.projectId && r.idempotencyKey === idemKey
     );
@@ -3257,7 +3340,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
       }
 
       if (!amountMatches || !allocsMatch) {
-        const err: any = new Error('Kunci idempotensi sudah digunakan dengan data berbeda.');
+        const err: any = new Error('RECEIPT_IDEMPOTENCY_CONFLICT: Kunci idempotensi sudah digunakan dengan data berbeda.');
         err.statusCode = 409;
         throw err;
       }
@@ -3266,6 +3349,16 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         ...existing,
         allocations: existingAllocs.map(a => ({ ...a }))
       };
+    }
+
+    const rcptNumber = (input.receiptNumber || '').trim();
+    if (rcptNumber) {
+      const dup = this.cashReceipts.find(r => r.orgId === input.orgId && r.projectId === input.projectId && r.receiptNumber === rcptNumber);
+      if (dup) {
+        const err: any = new Error('Nomor kuitansi sudah digunakan pada proyek ini.');
+        err.statusCode = 409;
+        throw err;
+      }
     }
 
     const releaseFns: Array<() => void> = [];
