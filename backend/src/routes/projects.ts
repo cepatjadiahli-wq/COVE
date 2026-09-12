@@ -10,6 +10,7 @@ import {AuthService} from '../services/auth.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
 import {getProjectRepository} from '../repositories/project.repository.js';
 import {getLedgerRepository} from '../repositories/ledger.repository.js';
+import {getActionRepository} from '../repositories/action.repository.js';
 
 export const projectsRoute = new Hono();
 
@@ -47,8 +48,8 @@ projectsRoute.get('/projects/:id', async (c) => {
     return c.json({success: false, error: 'Proyek tidak ditemukan'}, 404);
   }
 
-  // Downstream unmigrated sub-resources still isolated by actor.orgId
-  const actions = db.actions.filter(a => a.projectId === id && a.orgId === actor.orgId);
+  // Canonical PostgreSQL Actions & Invoices isolated by actor.orgId
+  const actions = await getActionRepository().getActions(actor.orgId, { projectId: id });
   const invoices = await getLedgerRepository().getProjectInvoices(actor.orgId, id);
   const documents = db.documents.filter(d => d.projectId === id && d.orgId === actor.orgId);
 
