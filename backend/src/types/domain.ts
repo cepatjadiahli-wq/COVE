@@ -207,6 +207,20 @@ export interface CheckoutSessionEntity {
   updatedAt?: string;
 }
 
+export interface BillingPaymentEntity {
+  id: string;
+  organizationId: string;
+  checkoutSessionId?: string | null;
+  provider: string;
+  providerPaymentId: string;
+  providerEventId?: string | null;
+  amount: number | string;
+  currency: string;
+  status: 'PENDING' | 'SETTLED' | 'FAILED' | 'REFUNDED';
+  paidAt: string;
+  createdAt: string;
+}
+
 export interface SubscriptionEntity {
   id: string;
   planId: string;
