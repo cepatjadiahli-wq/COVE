@@ -227,6 +227,9 @@ export interface WebhookEventRecord {
   payload: Record<string, unknown>;
   payloadHash?: string;
   processedAt: string;
+  conflictCount?: number;
+  lastConflictHash?: string;
+  lastConflictAt?: string;
 }
 
 export interface StageMetricsResult {

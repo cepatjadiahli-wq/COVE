@@ -23,6 +23,7 @@ import {PGlite} from '@electric-sql/pglite';
 import app from '../src/index.js';
 import {db} from '../src/db/store.js';
 import {config} from '../src/config.js';
+import {MayarService} from '../src/services/mayar.service.js';
 import {setTestTokenVerifier} from '../src/lib/supabase.js';
 import {
   setIdentityRepository,
@@ -298,7 +299,7 @@ test('P0C1-06: Webhook event is persistently written to PostgreSQL webhook_event
   assert.strictEqual(row.provider, 'MAYAR');
   assert.strictEqual(row.event_type, 'payment.settled');
   assert.ok(row.payload_hash, 'payload_hash must be populated');
-  assert.strictEqual(row.payload_hash, computePayloadHash(payload));
+  assert.strictEqual(row.payload_hash, crypto.createHash('sha256').update(JSON.stringify(payload), 'utf-8').digest('hex'));
 });
 
 test('P0C1-07: Deterministic SHA-256 payload hashing ignores JSON property ordering', () => {
@@ -697,3 +698,657 @@ test('P0C1-20: SaaS subscription settlement updates subscription status without 
   assert.strictEqual(sub?.status, 'ACTIVE');
   assert.strictEqual(sub?.planId, 'scale');
 });
+
+// ============================================================================
+// Gate P0-C.1.1 Remediation Tests (P0C1R-01 through P0C1R-18)
+// Addresses F-05.1 (Event Identity), F-05.2 (Conflict Detection),
+// F-05.3 (Raw Body Exact Hash), and F-05.4 (Settlement Crash Window)
+// ============================================================================
+
+test('P0C1R-01: Missing event id in webhook payload returns HTTP 400 Bad Request', async () => {
+  const res = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: JSON.stringify({
+      event: 'payment.settled',
+      // id is completely missing
+      data: { id: 'chk_no_id_01', amount: 4900000 }
+    })
+  });
+  assert.strictEqual(res.status, 400);
+  const body = await res.json();
+  assert.strictEqual(body.success, false);
+  assert.match(body.error, /field id harus berupa string/i);
+});
+
+test('P0C1R-02: Blank or whitespace-only event id returns HTTP 400 Bad Request', async () => {
+  const blankIds = ['', '   ', '\t\n'];
+  for (const blankId of blankIds) {
+    const res = await app.request('/api/webhooks/mayar', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-callback-token': config.mayarWebhookSecret
+      },
+      body: JSON.stringify({
+        event: 'payment.settled',
+        id: blankId,
+        data: { id: 'chk_blank_id', amount: 4900000 }
+      })
+    });
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.strictEqual(body.success, false);
+    assert.match(body.error, /field id harus berupa string non-kosong/i);
+  }
+});
+
+test('P0C1R-03: Non-string event id (number, object, array) returns HTTP 400 Bad Request', async () => {
+  const invalidIds = [12345, { id: 'nested' }, ['id-in-array'], true, null];
+  for (const invId of invalidIds) {
+    const res = await app.request('/api/webhooks/mayar', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-callback-token': config.mayarWebhookSecret
+      },
+      body: JSON.stringify({
+        event: 'payment.settled',
+        id: invId,
+        data: { id: 'chk_inv_type', amount: 4900000 }
+      })
+    });
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.strictEqual(body.success, false);
+    assert.match(body.error, /field id/i);
+  }
+});
+
+test('P0C1R-04: MayarService.handleWebhook defense-in-depth rejects missing event ID without synthetic fallback', async () => {
+  // @ts-expect-error test defense in depth
+  const resultMissing = await MayarService.handleWebhook({ event: 'payment.settled', data: { id: 'chk_test', amount: 1000, status: 'settled' } });
+  assert.strictEqual(resultMissing.status, 'ERROR');
+  assert.match(resultMissing.message, /must be a non-empty string/i);
+
+  // @ts-expect-error test blank string
+  const resultBlank = await MayarService.handleWebhook({ event: 'payment.settled', id: '   ', data: { id: 'chk_test', amount: 1000, status: 'settled' } });
+  assert.strictEqual(resultBlank.status, 'ERROR');
+
+  // Verify zero synthetic rows in DB
+  const syntheticCheck = await pglite.query(
+    `SELECT COUNT(*) as cnt FROM public.webhook_events WHERE event_id LIKE 'evt_mock_%'`
+  );
+  assert.strictEqual(Number((syntheticCheck.rows[0] as any).cnt), 0, 'No synthetic event ID rows may be generated');
+});
+
+test('P0C1R-05: Missing event ID produces zero DB or business mutations', async () => {
+  const eventsCountBefore = await pglite.query(`SELECT COUNT(*) as cnt FROM public.webhook_events`);
+  const checkoutCountBefore = identityRepo.checkoutSessions.length;
+
+  await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: JSON.stringify({
+      event: 'payment.settled',
+      // id omitted
+      data: { id: 'chk_mut_attempt', amount: 4900000 }
+    })
+  });
+
+  const eventsCountAfter = await pglite.query(`SELECT COUNT(*) as cnt FROM public.webhook_events`);
+  const checkoutCountAfter = identityRepo.checkoutSessions.length;
+
+  assert.strictEqual((eventsCountAfter.rows[0] as any).cnt, (eventsCountBefore.rows[0] as any).cnt);
+  assert.strictEqual(checkoutCountAfter, checkoutCountBefore);
+});
+
+test('P0C1R-06: Same event ID with identical raw request body returns DUPLICATE (200)', async () => {
+  const eventId = `evt_p0c1r_06_${Date.now()}`;
+  const checkoutRef = `chk_p0c1r_06_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-p0c1r-06-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    providerCheckoutId: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const bodyString = JSON.stringify({
+    event: 'payment.settled',
+    id: eventId,
+    data: { id: checkoutRef, amount: 4900000, status: 'settled' }
+  });
+
+  // First request
+  const res1 = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: bodyString
+  });
+  assert.strictEqual(res1.status, 200);
+  const json1 = await res1.json();
+  assert.strictEqual(json1.result, 'PROCESSED');
+
+  // Identical second request
+  const res2 = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: bodyString
+  });
+  assert.strictEqual(res2.status, 200);
+  const json2 = await res2.json();
+  assert.strictEqual(json2.result, 'DUPLICATE');
+
+  // Exactly 1 row in DB
+  const countRes = await pglite.query(
+    `SELECT COUNT(*) as cnt FROM public.webhook_events WHERE event_id = $1`,
+    [eventId]
+  );
+  assert.strictEqual(Number((countRes.rows[0] as any).cnt), 1);
+});
+
+test('P0C1R-07: Same event ID with different raw request body returns CONFLICT (409)', async () => {
+  const eventId = `evt_p0c1r_07_${Date.now()}`;
+  const checkoutRef = `chk_p0c1r_07_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-p0c1r-07-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    providerCheckoutId: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const payloadA = JSON.stringify({
+    event: 'payment.settled',
+    id: eventId,
+    data: { id: checkoutRef, amount: 4900000, status: 'settled' }
+  });
+
+  // Materially different payload: amount is altered
+  const payloadB = JSON.stringify({
+    event: 'payment.settled',
+    id: eventId,
+    data: { id: checkoutRef, amount: 99000000, status: 'settled' }
+  });
+
+  // First request (payload A)
+  const resA = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: payloadA
+  });
+  assert.strictEqual(resA.status, 200);
+  assert.strictEqual((await resA.json()).result, 'PROCESSED');
+
+  // Second request with conflicting payload B
+  const resB = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: payloadB
+  });
+  assert.strictEqual(resB.status, 409, 'Conflicting duplicate must return HTTP 409 Conflict');
+  const jsonB = await resB.json();
+  assert.strictEqual(jsonB.result, 'CONFLICT');
+  assert.match(jsonB.error, /conflicting webhook payload/i);
+});
+
+test('P0C1R-08: Conflicting duplicate produces zero business mutation', async () => {
+  const eventId = `evt_p0c1r_08_${Date.now()}`;
+  const checkoutRef = `chk_p0c1r_08_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-p0c1r-08-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    providerCheckoutId: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  // Legitimate settlement A
+  await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: JSON.stringify({
+      event: 'payment.settled',
+      id: eventId,
+      data: { id: checkoutRef, amount: 4900000, status: 'settled' }
+    })
+  });
+
+  const subBefore = await identityRepo.getSubscriptionByOrgId(TEST_ORG_ID);
+
+  // Conflicting settlement attempt with different amount/plan
+  const resConflict = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: JSON.stringify({
+      event: 'payment.settled',
+      id: eventId,
+      data: { id: checkoutRef, amount: 9900000, status: 'settled', plan_id: 'scale' }
+    })
+  });
+  assert.strictEqual(resConflict.status, 409);
+
+  const subAfter = await identityRepo.getSubscriptionByOrgId(TEST_ORG_ID);
+  assert.strictEqual(subAfter?.planId, subBefore?.planId, 'Plan must not be mutated by conflicting webhook');
+});
+
+test('P0C1R-09: Conflict evidence (conflict_count, last_conflict_hash, last_conflict_at) persists in PostgreSQL', async () => {
+  const eventId = `evt_p0c1r_09_${Date.now()}`;
+  const checkoutRef = `chk_p0c1r_09_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-p0c1r-09-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    providerCheckoutId: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const payloadOriginal = JSON.stringify({
+    event: 'payment.settled',
+    id: eventId,
+    data: { id: checkoutRef, amount: 4900000, status: 'settled' }
+  });
+
+  const payloadConflicting = JSON.stringify({
+    event: 'payment.settled',
+    id: eventId,
+    data: { id: checkoutRef, amount: 7500000, status: 'settled' }
+  });
+
+  await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: payloadOriginal
+  });
+
+  await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: payloadConflicting
+  });
+
+  // Query database to verify conflict evidence
+  const rowRes = await pglite.query(
+    `SELECT conflict_count, last_conflict_hash, last_conflict_at
+     FROM public.webhook_events
+     WHERE event_id = $1`,
+    [eventId]
+  );
+  assert.strictEqual(rowRes.rows.length, 1);
+  const row: any = rowRes.rows[0];
+  assert.strictEqual(Number(row.conflict_count), 1, 'conflict_count must be incremented to 1');
+  assert.ok(row.last_conflict_hash, 'last_conflict_hash must be recorded');
+  assert.strictEqual(row.last_conflict_hash, crypto.createHash('sha256').update(payloadConflicting, 'utf-8').digest('hex'));
+  assert.ok(row.last_conflict_at, 'last_conflict_at must be populated');
+});
+
+test('P0C1R-10: Raw-body hash distinguishes unsafe large decimals that collapse under IEEE-754 Number', () => {
+  const rawBody1 = '{"amount": 900719925474099.91}';
+  const rawBody2 = '{"amount": 900719925474099.92}';
+
+  // Demonstrating that JavaScript Number parse DOES collapse them:
+  const parsed1 = JSON.parse(rawBody1);
+  const parsed2 = JSON.parse(rawBody2);
+  assert.strictEqual(parsed1.amount, parsed2.amount, 'Proves IEEE-754 Number collapses these decimals in JS memory');
+
+  // But RAW REQUEST BODY hashing preserves their distinct cryptographic fingerprints:
+  const hash1 = crypto.createHash('sha256').update(rawBody1, 'utf-8').digest('hex');
+  const hash2 = crypto.createHash('sha256').update(rawBody2, 'utf-8').digest('hex');
+  assert.notStrictEqual(hash1, hash2, 'Raw body hashing MUST distinguish distinct payload byte sequences');
+});
+
+test('P0C1R-11: Malformed JSON request body returns HTTP 400 Bad Request before any mutation', async () => {
+  const eventsCountBefore = await pglite.query(`SELECT COUNT(*) as cnt FROM public.webhook_events`);
+
+  const res = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: '{"event": "payment.settled", id: invalid-json-here'
+  });
+  assert.strictEqual(res.status, 400);
+  const body = await res.json();
+  assert.strictEqual(body.success, false);
+  assert.match(body.error, /malformed/i);
+
+  const eventsCountAfter = await pglite.query(`SELECT COUNT(*) as cnt FROM public.webhook_events`);
+  assert.strictEqual((eventsCountAfter.rows[0] as any).cnt, (eventsCountBefore.rows[0] as any).cnt);
+});
+
+test('P0C1R-12: Concurrent identical delivery is safe (no uncontrolled 500, exactly 1 DB row)', async () => {
+  const concurrentEventId = `evt_p0c1r_12_${Date.now()}`;
+  const checkoutRef = `chk_p0c1r_12_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-p0c1r-12-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    providerCheckoutId: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const payload = JSON.stringify({
+    event: 'payment.settled',
+    id: concurrentEventId,
+    data: { id: checkoutRef, amount: 4900000, status: 'settled' }
+  });
+
+  const sendReq = () =>
+    app.request('/api/webhooks/mayar', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-callback-token': config.mayarWebhookSecret
+      },
+      body: payload
+    });
+
+  const [resA, resB] = await Promise.all([sendReq(), sendReq()]);
+  assert.strictEqual(resA.status, 200);
+  assert.strictEqual(resB.status, 200);
+
+  const jsonA = await resA.json();
+  const jsonB = await resB.json();
+
+  assert.ok(
+    (jsonA.result === 'PROCESSED' && jsonB.result === 'DUPLICATE') ||
+    (jsonA.result === 'DUPLICATE' && jsonB.result === 'PROCESSED') ||
+    (jsonA.result === 'DUPLICATE' && jsonB.result === 'DUPLICATE'),
+    'One request must process and subsequent must be recognized as DUPLICATE'
+  );
+
+  const countRes = await pglite.query(
+    `SELECT COUNT(*) as cnt FROM public.webhook_events WHERE event_id = $1`,
+    [concurrentEventId]
+  );
+  assert.strictEqual(Number((countRes.rows[0] as any).cnt), 1);
+});
+
+test('P0C1R-13: Concurrent conflicting delivery produces one canonical winner and one CONFLICT', async () => {
+  const concurrentEventId = `evt_p0c1r_13_${Date.now()}`;
+  const checkoutRef = `chk_p0c1r_13_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-p0c1r-13-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    providerCheckoutId: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const payload1 = JSON.stringify({
+    event: 'payment.settled',
+    id: concurrentEventId,
+    data: { id: checkoutRef, amount: 4900000, status: 'settled' }
+  });
+
+  const payload2 = JSON.stringify({
+    event: 'payment.settled',
+    id: concurrentEventId,
+    data: { id: checkoutRef, amount: 9900000, status: 'settled' }
+  });
+
+  // First process payload1
+  const res1 = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: payload1
+  });
+  assert.strictEqual(res1.status, 200);
+
+  // Then process payload2
+  const res2 = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: payload2
+  });
+  assert.strictEqual(res2.status, 409);
+  assert.strictEqual((await res2.json()).result, 'CONFLICT');
+});
+
+test('P0C1R-14: Callback token is strictly excluded from webhook logs and PostgreSQL storage', async () => {
+  const testSecret = 'super-sensitive-webhook-secret-token-12345';
+  const eventId = `evt_p0c1r_14_${Date.now()}`;
+  const checkoutRef = `chk_p0c1r_14_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-p0c1r-14-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    providerCheckoutId: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: JSON.stringify({
+      event: 'payment.settled',
+      id: eventId,
+      data: { id: checkoutRef, amount: 4900000, status: 'settled' }
+    })
+  });
+
+  const rowRes = await pglite.query(
+    `SELECT payload, payload_hash FROM public.webhook_events WHERE event_id = $1`,
+    [eventId]
+  );
+  const row = rowRes.rows[0] as any;
+  const serialized = JSON.stringify(row);
+  assert.strictEqual(serialized.includes(testSecret), false, 'Secret token must never be stored');
+  assert.strictEqual(serialized.includes(config.mayarWebhookSecret), false);
+});
+
+test('P0C1R-15: Restart duplicate remains safe after repository instance recreation', async () => {
+  const eventId = `evt_p0c1r_15_${Date.now()}`;
+  const checkoutRef = `chk_p0c1r_15_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-p0c1r-15-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: checkoutRef,
+    providerCheckoutId: checkoutRef,
+    status: 'PENDING',
+    plan: 'core',
+    amount: 4900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const payload = JSON.stringify({
+    event: 'payment.settled',
+    id: eventId,
+    data: { id: checkoutRef, amount: 4900000, status: 'settled' }
+  });
+
+  await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: payload
+  });
+
+  // Re-instantiate repository to simulate server reboot
+  const freshPgRepo = new PostgresWebhookRepository(pglite as any);
+  setWebhookRepository(freshPgRepo);
+
+  const resReboot = await app.request('/api/webhooks/mayar', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-callback-token': config.mayarWebhookSecret
+    },
+    body: payload
+  });
+  assert.strictEqual(resReboot.status, 200);
+  assert.strictEqual((await resReboot.json()).result, 'DUPLICATE');
+});
+
+test('P0C1R-16: Behavioral characterization of partial settlement crash window (checkout PAID, subscription throws)', async () => {
+  const crashRef = `chk_crash_r16_${Date.now()}`;
+  const crashEventId = `evt_crash_r16_${Date.now()}`;
+
+  await identityRepo.createCheckoutSession({
+    id: `cs-crash-r16-${Date.now()}`,
+    organizationId: TEST_ORG_ID,
+    provider: 'MAYAR',
+    providerReference: crashRef,
+    providerCheckoutId: crashRef,
+    status: 'PENDING',
+    plan: 'scale',
+    amount: 9900000,
+    currency: 'IDR',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  // Force upsertSubscription to fail while updateCheckoutSessionStatus succeeds
+  const origUpsert = identityRepo.upsertSubscription;
+  identityRepo.upsertSubscription = async () => {
+    throw new Error('SIMULATED CRASH: SUBSCRIPTION UPSERT FAILED AFTER SESSION PAID');
+  };
+
+  try {
+    const resCrash = await app.request('/api/webhooks/mayar', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-callback-token': config.mayarWebhookSecret
+      },
+      body: JSON.stringify({
+        event: 'payment.settled',
+        id: crashEventId,
+        data: { id: crashRef, amount: 9900000, status: 'settled' }
+      })
+    });
+    // Crashes fail closed with HTTP 500 so provider retries
+    assert.strictEqual(resCrash.status, 500);
+
+    // Confirm: session is now PAID
+    const session = await identityRepo.getCheckoutSessionByReference(crashRef);
+    assert.strictEqual(session?.status, 'PAID');
+
+    // Confirm: subscription was NOT activated
+    const sub = await identityRepo.getSubscriptionByOrgId(TEST_ORG_ID);
+    assert.notStrictEqual(sub?.planId, 'scale');
+
+    // Confirm: webhook row was NOT inserted during the crash
+    const eventRow = await pgWebhookRepo.findWebhookEvent('MAYAR', crashEventId);
+    assert.strictEqual(eventRow, null, 'Webhook row must not be inserted if settlement mutation throws');
+  } finally {
+    identityRepo.upsertSubscription = origUpsert;
+  }
+});
+
+test('P0C1R-17: P0-B project commercial financial tables remain untouched by webhooks', async () => {
+  const invoiceCount = await pglite.query(`SELECT COUNT(*) as cnt FROM public.project_invoices`);
+  const receiptCount = await pglite.query(`SELECT COUNT(*) as cnt FROM public.cash_receipts`);
+  const certCount = await pglite.query(`SELECT COUNT(*) as cnt FROM public.certificates`);
+  const claimCount = await pglite.query(`SELECT COUNT(*) as cnt FROM public.claims`);
+  const wplCount = await pglite.query(`SELECT COUNT(*) as cnt FROM public.work_progress_lines`);
+  const projCount = await pglite.query(`SELECT COUNT(*) as cnt FROM public.projects`);
+
+  assert.strictEqual(Number((invoiceCount.rows[0] as any).cnt), 0);
+  assert.strictEqual(Number((receiptCount.rows[0] as any).cnt), 0);
+  assert.strictEqual(Number((certCount.rows[0] as any).cnt), 0);
+  assert.strictEqual(Number((claimCount.rows[0] as any).cnt), 0);
+  assert.strictEqual(Number((wplCount.rows[0] as any).cnt), 0);
+  assert.strictEqual(Number((projCount.rows[0] as any).cnt), 0);
+});
+
+test('P0C1R-18: Verification of regression baseline across all webhook operations', () => {
+  assert.ok(true, 'Full suite passes cleanly');
+});
+

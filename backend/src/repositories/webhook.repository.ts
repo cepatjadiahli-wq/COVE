@@ -1,8 +1,9 @@
 // ============================================================================
-// COVE Backend — Canonical Webhook Event Repository (Gate P0-C.1)
+// COVE Backend — Canonical Webhook Event Repository (Gate P0-C.1, P0-C.1.1)
 // Acuan: COVE_PRD_v2.0_Product_End_State.md, COVE_ERD_v2.0_Logical_Data_Model.md §2, §9
 // Replaces in-memory webhook authority with canonical PostgreSQL persistence.
-// Enforces durable idempotency, deterministic payload hashing, and race recovery.
+// Enforces durable idempotency, raw-body SHA-256 integrity hashing, conflict tracking,
+// and race recovery.
 // ============================================================================
 
 import crypto from 'node:crypto';
@@ -17,6 +18,9 @@ export interface WebhookEventEntity {
   payload: Record<string, unknown>;
   payloadHash: string;
   processedAt: string;
+  conflictCount: number;
+  lastConflictHash?: string | null;
+  lastConflictAt?: string | null;
 }
 
 export interface RecordWebhookInput {
@@ -31,6 +35,7 @@ export interface RecordWebhookInput {
 
 export interface RecordWebhookResult {
   event: WebhookEventEntity;
+  status: 'STORED' | 'DUPLICATE' | 'CONFLICT';
   isDuplicate: boolean;
 }
 
@@ -52,7 +57,7 @@ export interface IWebhookRepository {
 
 /**
  * Deterministically serializes JSON with recursively sorted keys.
- * Guarantees that identical data produces identical SHA-256 digests.
+ * Used as a secondary utility; authoritative fingerprint is raw request body bytes.
  */
 export function canonicalJsonStringify(obj: unknown): string {
   if (obj === null || typeof obj !== 'object') {
@@ -66,17 +71,18 @@ export function canonicalJsonStringify(obj: unknown): string {
 }
 
 /**
- * Calculates a deterministic SHA-256 fingerprint for webhook payloads.
+ * Calculates a SHA-256 fingerprint for webhook payloads.
+ * If payload is already raw string/Buffer, hashes bytes directly.
  */
-export function computePayloadHash(payload: Record<string, unknown> | unknown): string {
-  const serialized = canonicalJsonStringify(payload);
-  return crypto.createHash('sha256').update(serialized, 'utf-8').digest('hex');
+export function computePayloadHash(payload: Record<string, unknown> | string | unknown): string {
+  const content = typeof payload === 'string' ? payload : canonicalJsonStringify(payload);
+  return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
 }
 
 /**
  * Constant-time payload hash verification.
  */
-export function verifyPayloadHash(payload: Record<string, unknown> | unknown, expectedHash: string): boolean {
+export function verifyPayloadHash(payload: Record<string, unknown> | string | unknown, expectedHash: string): boolean {
   const actualHash = computePayloadHash(payload);
   const actualBuf = Buffer.from(actualHash, 'utf-8');
   const expectedBuf = Buffer.from(expectedHash, 'utf-8');
@@ -114,30 +120,55 @@ export class PostgresWebhookRepository implements IWebhookRepository {
     const validUuid = isValidUuid(input.id) ? input.id : null;
 
     try {
-      // 1. Initial existence check
+      // 1. Initial existence check for idempotency and conflict detection
       const existingRes = await client.query(
-        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at
+        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                conflict_count, last_conflict_hash, last_conflict_at
          FROM public.webhook_events
          WHERE provider = $1 AND event_id = $2`,
         [provider, input.eventId]
       );
 
       if (existingRes.rows.length > 0) {
+        const existing = existingRes.rows[0];
+        // Compare payload hashes: identical -> DUPLICATE, different -> CONFLICT
+        if (existing.payload_hash && existing.payload_hash !== payloadHash) {
+          const updateRes = await client.query(
+            `UPDATE public.webhook_events
+             SET conflict_count = conflict_count + 1,
+                 last_conflict_hash = $1,
+                 last_conflict_at = NOW()
+             WHERE id = $2
+             RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                       conflict_count, last_conflict_hash, last_conflict_at`,
+            [payloadHash, existing.id]
+          );
+          return {
+            event: this.mapRow(updateRes.rows[0]),
+            status: 'CONFLICT',
+            isDuplicate: false
+          };
+        }
+
         return {
-          event: this.mapRow(existingRes.rows[0]),
+          event: this.mapRow(existing),
+          status: 'DUPLICATE',
           isDuplicate: true
         };
       }
 
-      // 2. Insert with ON CONFLICT DO NOTHING for atomic race safety
+      // 2. Insert with ON CONFLICT (provider, event_id) DO NOTHING for atomic race safety
       const insertRes = await client.query(
         `INSERT INTO public.webhook_events (
-           id, event_id, provider, event_type, payload, payload_hash, processed_at
+           id, event_id, provider, event_type, payload, payload_hash, processed_at,
+           conflict_count, last_conflict_hash, last_conflict_at
          ) VALUES (
-           COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5::jsonb, $6, $7::timestamptz
+           COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5::jsonb, $6, $7::timestamptz,
+           0, NULL, NULL
          )
          ON CONFLICT (provider, event_id) DO NOTHING
-         RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at`,
+         RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                   conflict_count, last_conflict_hash, last_conflict_at`,
         [
           validUuid,
           input.eventId,
@@ -150,16 +181,36 @@ export class PostgresWebhookRepository implements IWebhookRepository {
       );
 
       if (insertRes.rows.length === 0) {
-        // Race condition: another concurrent transaction committed between check and insert
+        // Race condition: concurrent transaction committed between check and insert
         const raceRes = await client.query(
-          `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at
+          `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                  conflict_count, last_conflict_hash, last_conflict_at
            FROM public.webhook_events
            WHERE provider = $1 AND event_id = $2`,
           [provider, input.eventId]
         );
         if (raceRes.rows.length > 0) {
+          const raced = raceRes.rows[0];
+          if (raced.payload_hash && raced.payload_hash !== payloadHash) {
+            const updateRes = await client.query(
+              `UPDATE public.webhook_events
+               SET conflict_count = conflict_count + 1,
+                   last_conflict_hash = $1,
+                   last_conflict_at = NOW()
+               WHERE id = $2
+               RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                         conflict_count, last_conflict_hash, last_conflict_at`,
+              [payloadHash, raced.id]
+            );
+            return {
+              event: this.mapRow(updateRes.rows[0]),
+              status: 'CONFLICT',
+              isDuplicate: false
+            };
+          }
           return {
-            event: this.mapRow(raceRes.rows[0]),
+            event: this.mapRow(raced),
+            status: 'DUPLICATE',
             isDuplicate: true
           };
         }
@@ -167,20 +218,41 @@ export class PostgresWebhookRepository implements IWebhookRepository {
 
       return {
         event: this.mapRow(insertRes.rows[0]),
+        status: 'STORED',
         isDuplicate: false
       };
     } catch (err: any) {
-      // Unique violation code 23505 race recovery
+      // Standalone event_id unique constraint race fallback
       if (err.code === '23505') {
         const raceRes = await client.query(
-          `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at
+          `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                  conflict_count, last_conflict_hash, last_conflict_at
            FROM public.webhook_events
            WHERE provider = $1 AND event_id = $2`,
           [provider, input.eventId]
         );
         if (raceRes.rows.length > 0) {
+          const raced = raceRes.rows[0];
+          if (raced.payload_hash && raced.payload_hash !== payloadHash) {
+            const updateRes = await client.query(
+              `UPDATE public.webhook_events
+               SET conflict_count = conflict_count + 1,
+                   last_conflict_hash = $1,
+                   last_conflict_at = NOW()
+               WHERE id = $2
+               RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                         conflict_count, last_conflict_hash, last_conflict_at`,
+              [payloadHash, raced.id]
+            );
+            return {
+              event: this.mapRow(updateRes.rows[0]),
+              status: 'CONFLICT',
+              isDuplicate: false
+            };
+          }
           return {
-            event: this.mapRow(raceRes.rows[0]),
+            event: this.mapRow(raced),
+            status: 'DUPLICATE',
             isDuplicate: true
           };
         }
@@ -195,7 +267,8 @@ export class PostgresWebhookRepository implements IWebhookRepository {
     const client = await this.getClient();
     try {
       const res = await client.query(
-        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at
+        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                conflict_count, last_conflict_hash, last_conflict_at
          FROM public.webhook_events
          WHERE provider = $1 AND event_id = $2`,
         [provider, eventId]
@@ -211,7 +284,8 @@ export class PostgresWebhookRepository implements IWebhookRepository {
     const client = await this.getClient();
     try {
       const res = await client.query(
-        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at
+        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
+                conflict_count, last_conflict_hash, last_conflict_at
          FROM public.webhook_events
          ORDER BY processed_at DESC
          LIMIT $1`,
@@ -231,7 +305,10 @@ export class PostgresWebhookRepository implements IWebhookRepository {
       eventType: row.event_type,
       payload: typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload,
       payloadHash: row.payload_hash || '',
-      processedAt: row.processed_at instanceof Date ? row.processed_at.toISOString() : String(row.processed_at)
+      processedAt: row.processed_at instanceof Date ? row.processed_at.toISOString() : String(row.processed_at),
+      conflictCount: Number(row.conflict_count) || 0,
+      lastConflictHash: row.last_conflict_hash || null,
+      lastConflictAt: row.last_conflict_at instanceof Date ? row.last_conflict_at.toISOString() : (row.last_conflict_at ? String(row.last_conflict_at) : null)
     };
   }
 }
@@ -241,12 +318,19 @@ export class InMemoryWebhookRepository implements IWebhookRepository {
 
   async recordWebhookEvent(input: RecordWebhookInput): Promise<RecordWebhookResult> {
     const provider = input.provider || 'MAYAR';
+    const payloadHash = input.payloadHash || computePayloadHash(input.payload);
     const existing = this.events.find(e => e.provider === provider && e.eventId === input.eventId);
+
     if (existing) {
-      return { event: existing, isDuplicate: true };
+      if (existing.payloadHash && existing.payloadHash !== payloadHash) {
+        existing.conflictCount = (existing.conflictCount || 0) + 1;
+        existing.lastConflictHash = payloadHash;
+        existing.lastConflictAt = new Date().toISOString();
+        return { event: { ...existing }, status: 'CONFLICT', isDuplicate: false };
+      }
+      return { event: { ...existing }, status: 'DUPLICATE', isDuplicate: true };
     }
 
-    const payloadHash = input.payloadHash || computePayloadHash(input.payload);
     const event: WebhookEventEntity = {
       id: input.id || `wh-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       eventId: input.eventId,
@@ -254,11 +338,14 @@ export class InMemoryWebhookRepository implements IWebhookRepository {
       eventType: input.eventType,
       payload: input.payload,
       payloadHash,
-      processedAt: input.processedAt || new Date().toISOString()
+      processedAt: input.processedAt || new Date().toISOString(),
+      conflictCount: 0,
+      lastConflictHash: null,
+      lastConflictAt: null
     };
 
     this.events.unshift(event);
-    return { event, isDuplicate: false };
+    return { event: { ...event }, status: 'STORED', isDuplicate: false };
   }
 
   async findWebhookEvent(provider: string, eventId: string): Promise<WebhookEventEntity | null> {
