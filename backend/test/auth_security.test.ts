@@ -282,6 +282,7 @@ test('AUTH-08: FINANCE_MANAGER: allowed invoice capability, denied commercial le
     },
     body: JSON.stringify({
       projectId: 'p1',
+      idempotencyKey: 'idem-auth-08',
       amount: 10000000,
       receivedDate: '2026-09-08',
       allocations: [{invoiceId: 'i1', amount: 10000000}]
