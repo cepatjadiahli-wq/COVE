@@ -225,6 +225,7 @@ export interface WebhookEventRecord {
   eventType: string;
   provider: string;
   payload: Record<string, unknown>;
+  payloadHash?: string;
   processedAt: string;
 }
 

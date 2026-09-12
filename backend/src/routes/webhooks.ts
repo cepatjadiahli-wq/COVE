@@ -15,18 +15,28 @@ webhooksRoute.post('/webhooks/mayar', async (c) => {
   const token = c.req.header('x-callback-token');
   const secret = config.mayarWebhookSecret;
 
-  if (!token || !secret) {
+  // Fail-closed check: server webhook secret must be configured
+  if (!secret) {
     return c.json({
       success: false,
-      error: 'Unauthorized: missing webhook callback token or secret.'
+      error: 'Server configuration error: Mayar webhook secret is not configured.'
+    }, 500);
+  }
+
+  // Missing callback token check
+  if (!token) {
+    return c.json({
+      success: false,
+      error: 'Unauthorized: missing webhook callback token.'
     }, 401);
   }
 
-  const tokenBuffer = Buffer.from(token, 'utf-8');
-  const secretBuffer = Buffer.from(secret, 'utf-8');
+  // Cryptographic constant-time comparison using fixed 32-byte SHA-256 digests
+  // Eliminates token-length timing side-channels
+  const tokenHash = crypto.createHash('sha256').update(token, 'utf-8').digest();
+  const secretHash = crypto.createHash('sha256').update(secret, 'utf-8').digest();
 
-  // Constant-time comparison with length check
-  if (tokenBuffer.length !== secretBuffer.length || !crypto.timingSafeEqual(tokenBuffer, secretBuffer)) {
+  if (!crypto.timingSafeEqual(tokenHash, secretHash)) {
     return c.json({
       success: false,
       error: 'Unauthorized: invalid webhook callback token.'
