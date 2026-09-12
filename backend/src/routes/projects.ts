@@ -9,6 +9,7 @@ import {db} from '../db/store.js';
 import {AuthService} from '../services/auth.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
 import {getProjectRepository} from '../repositories/project.repository.js';
+import {getLedgerRepository} from '../repositories/ledger.repository.js';
 
 export const projectsRoute = new Hono();
 
@@ -48,7 +49,7 @@ projectsRoute.get('/projects/:id', async (c) => {
 
   // Downstream unmigrated sub-resources still isolated by actor.orgId
   const actions = db.actions.filter(a => a.projectId === id && a.orgId === actor.orgId);
-  const invoices = db.invoices.filter(i => i.projectId === id && i.orgId === actor.orgId);
+  const invoices = await getLedgerRepository().getProjectInvoices(actor.orgId, id);
   const documents = db.documents.filter(d => d.projectId === id && d.orgId === actor.orgId);
 
   return c.json({

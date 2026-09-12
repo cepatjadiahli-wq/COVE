@@ -209,11 +209,20 @@ invoicesRoute.post('/invoices/receipts', async (c) => {
     amount: a.amount
   }));
 
+  const idempotencyKey = (
+    c.req.header('idempotency-key') ||
+    c.req.header('x-idempotency-key') ||
+    body.idempotencyKey ||
+    body.idempotency_key ||
+    ''
+  ).trim();
+
   try {
     const ledgerRepo = getLedgerRepository();
     const result = await ledgerRepo.createCashReceipt({
       orgId: actor.orgId,
       projectId,
+      idempotencyKey: idempotencyKey || undefined,
       receivedAmount: rawAmount,
       receiptNumber: body.receiptNumber,
       receivedAt: body.receivedDate || body.receivedAt,

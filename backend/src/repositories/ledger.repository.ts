@@ -147,6 +147,7 @@ export interface CashReceiptRecord {
   id: string;
   orgId: string;
   projectId: string;
+  idempotencyKey: string;
   receiptNumber?: string;
   receivedAt: string;
   bankReference: string;
@@ -263,6 +264,7 @@ export interface CreateProjectInvoiceInput {
 export interface CreateCashReceiptInput {
   orgId: string;
   projectId: string;
+  idempotencyKey?: string;
   receiptNumber?: string;
   receivedAt?: string;
   bankReference?: string;
@@ -294,7 +296,7 @@ export interface ILedgerRepository {
   getCertificateById(orgId: string, projectId: string, id: string): Promise<CertificateRecord | null>;
 
   createProjectInvoice(input: CreateProjectInvoiceInput): Promise<ProjectInvoiceRecord>;
-  getProjectInvoices(orgId: string, projectId: string): Promise<ProjectInvoiceRecord[]>;
+  getProjectInvoices(orgId: string, projectId?: string): Promise<ProjectInvoiceRecord[]>;
   getProjectInvoiceById(orgId: string, projectId: string, id: string): Promise<ProjectInvoiceRecord | null>;
 
   createCashReceipt(input: CreateCashReceiptInput): Promise<CashReceiptRecord>;
@@ -1334,7 +1336,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         const totalCertified = parseMoney(certAllocRes.rows[0]?.total_certified ?? '0');
 
         const alreadyInvoicedRes = await client.query(
-          `SELECT COALESCE(SUM(COALESCE(allocated_amount, allocated_principal)), 0) AS total_invoiced FROM public.project_invoice_allocations WHERE certificate_id = $1`,
+          `SELECT COALESCE(SUM(allocated_amount), 0) AS total_invoiced FROM public.project_invoice_allocations WHERE certificate_id = $1`,
           [alloc.certificateId]
         );
         const alreadyInvoiced = parseMoney(alreadyInvoicedRes.rows[0]?.total_invoiced ?? '0');
@@ -1409,7 +1411,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
           id: aRow.id,
           projectInvoiceId: aRow.project_invoice_id,
           certificateId: aRow.certificate_id,
-          allocatedAmount: parseMoney(aRow.allocated_amount || aRow.allocated_principal),
+          allocatedAmount: parseMoney(aRow.allocated_amount),
           createdAt: new Date(aRow.created_at).toISOString()
         });
       }
@@ -1444,21 +1446,36 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     }
   }
 
-  public async getProjectInvoices(orgId: string, projectId: string): Promise<ProjectInvoiceRecord[]> {
-    const query = `
-      SELECT 
-        pi.*,
-        COALESCE(
-          (SELECT SUM(COALESCE(ra.allocated_amount, ra.principal_allocated))
-           FROM public.receipt_allocations ra
-           WHERE ra.project_invoice_id = pi.id),
-          0
-        ) AS total_paid
-      FROM public.project_invoices pi
-      WHERE pi.org_id = $1 AND pi.project_id = $2
-      ORDER BY pi.created_at ASC
-    `;
-    const res = await this.pool.query(query, [orgId, projectId]);
+  public async getProjectInvoices(orgId: string, projectId?: string): Promise<ProjectInvoiceRecord[]> {
+    const query = projectId
+      ? `
+        SELECT 
+          pi.*,
+          COALESCE(
+            (SELECT SUM(ra.allocated_amount)
+             FROM public.receipt_allocations ra
+             WHERE ra.project_invoice_id = pi.id),
+            0
+          ) AS total_paid
+        FROM public.project_invoices pi
+        WHERE pi.org_id = $1 AND pi.project_id = $2
+        ORDER BY pi.created_at ASC
+      `
+      : `
+        SELECT 
+          pi.*,
+          COALESCE(
+            (SELECT SUM(ra.allocated_amount)
+             FROM public.receipt_allocations ra
+             WHERE ra.project_invoice_id = pi.id),
+            0
+          ) AS total_paid
+        FROM public.project_invoices pi
+        WHERE pi.org_id = $1
+        ORDER BY pi.created_at ASC
+      `;
+    const params = projectId ? [orgId, projectId] : [orgId];
+    const res = await this.pool.query(query, params);
     return res.rows.map(r => {
       const principal = parseMoney(r.principal_amount);
       const paid = parseMoney(r.total_paid);
@@ -1489,7 +1506,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       SELECT 
         pi.*,
         COALESCE(
-          (SELECT SUM(COALESCE(ra.allocated_amount, ra.principal_allocated))
+          (SELECT SUM(ra.allocated_amount)
            FROM public.receipt_allocations ra
            WHERE ra.project_invoice_id = pi.id),
           0
@@ -1532,7 +1549,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         id: a.id,
         projectInvoiceId: a.project_invoice_id,
         certificateId: a.certificate_id,
-        allocatedAmount: parseMoney(a.allocated_amount || a.allocated_principal),
+        allocatedAmount: parseMoney(a.allocated_amount),
         createdAt: new Date(a.created_at).toISOString()
       }))
     };
@@ -1577,6 +1594,77 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       }
     }
 
+    const idemKey = (input.idempotencyKey || '').trim() || crypto.randomUUID();
+
+    // Check if a receipt already exists for this (org_id, project_id, idempotency_key)
+    const existingRes = await this.pool.query(
+      `SELECT * FROM public.cash_receipts WHERE org_id = $1 AND project_id = $2 AND idempotency_key = $3`,
+      [input.orgId, input.projectId, idemKey]
+    );
+    if (existingRes.rows.length > 0) {
+      const existingRow = existingRes.rows[0];
+      const existingAllocRes = await this.pool.query(
+        `SELECT * FROM public.receipt_allocations WHERE cash_receipt_id = $1 ORDER BY created_at ASC`,
+        [existingRow.id]
+      );
+
+      const existingReceived = parseMoney(existingRow.received_amount);
+      const amountMatches = compareMoney(existingReceived, parsedReceived) === 0;
+
+      let allocsMatch = existingAllocRes.rows.length === input.allocations.length;
+      if (allocsMatch) {
+        for (const alloc of input.allocations) {
+          const parsedAllocA = parseMoney(alloc.amount);
+          const match = existingAllocRes.rows.find(
+            r => r.project_invoice_id === alloc.invoiceId && compareMoney(parseMoney(r.allocated_amount), parsedAllocA) === 0
+          );
+          if (!match) {
+            allocsMatch = false;
+            break;
+          }
+        }
+      }
+
+      if (!amountMatches || !allocsMatch) {
+        const err: any = new Error('Kunci idempotensi sudah digunakan dengan data berbeda.');
+        err.statusCode = 409;
+        throw err;
+      }
+
+      let existingAllocTotal = '0.00';
+      for (const r of existingAllocRes.rows) {
+        existingAllocTotal = addMoney(existingAllocTotal, parseMoney(r.allocated_amount));
+      }
+      const existingUnallocated = compareMoney(existingReceived, existingAllocTotal) > 0 ? subtractMoney(existingReceived, existingAllocTotal) : '0.00';
+
+      return {
+        id: existingRow.id,
+        orgId: existingRow.org_id,
+        projectId: existingRow.project_id,
+        idempotencyKey: existingRow.idempotency_key,
+        receiptNumber: existingRow.receipt_number || undefined,
+        receivedAt: existingRow.received_at,
+        bankReference: existingRow.bank_reference || '',
+        currency: existingRow.currency,
+        receivedAmount: existingReceived,
+        allocatedAmount: existingAllocTotal,
+        unallocatedAmount: existingUnallocated,
+        settlementStatus: existingRow.settlement_status,
+        paymentMethod: existingRow.payment_method,
+        description: existingRow.description || '',
+        notes: existingRow.notes || undefined,
+        createdAt: new Date(existingRow.created_at).toISOString(),
+        updatedAt: new Date(existingRow.updated_at).toISOString(),
+        allocations: existingAllocRes.rows.map(a => ({
+          id: a.id,
+          cashReceiptId: a.cash_receipt_id,
+          projectInvoiceId: a.project_invoice_id,
+          allocatedAmount: parseMoney(a.allocated_amount),
+          createdAt: new Date(a.created_at).toISOString()
+        }))
+      };
+    }
+
     const releaseFns: (() => void)[] = [];
     for (const alloc of input.allocations) {
       releaseFns.push(await this.acquireLock(`inv-${alloc.invoiceId}`));
@@ -1611,7 +1699,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         const principal = parseMoney(invRow.principal_amount);
 
         const paidRes = await client.query(
-          `SELECT COALESCE(SUM(COALESCE(allocated_amount, principal_allocated)), 0) AS total_paid FROM public.receipt_allocations WHERE project_invoice_id = $1`,
+          `SELECT COALESCE(SUM(allocated_amount), 0) AS total_paid FROM public.receipt_allocations WHERE project_invoice_id = $1`,
           [alloc.invoiceId]
         );
         const alreadyPaid = parseMoney(paidRes.rows[0]?.total_paid ?? '0');
@@ -1638,6 +1726,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         `INSERT INTO public.cash_receipts (
           org_id,
           project_id,
+          idempotency_key,
           receipt_number,
           received_at,
           bank_reference,
@@ -1649,11 +1738,12 @@ export class PostgresLedgerRepository implements ILedgerRepository {
           notes,
           created_at,
           updated_at
-        ) VALUES ($1, $2, $3, $4, $5, 'IDR', $6, 'SETTLED', $7, $8, $9, NOW(), NOW())
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'IDR', $7, 'SETTLED', $8, $9, $10, NOW(), NOW())
         RETURNING *`,
         [
           input.orgId,
           input.projectId,
+          idemKey,
           receiptNumber || null,
           receivedAt,
           input.bankReference || 'BANK-RCPT-AUTO',
@@ -1691,12 +1781,12 @@ export class PostgresLedgerRepository implements ILedgerRepository {
           id: aRow.id,
           cashReceiptId: aRow.cash_receipt_id,
           projectInvoiceId: aRow.project_invoice_id,
-          allocatedAmount: parseMoney(aRow.allocated_amount || aRow.principal_allocated),
+          allocatedAmount: parseMoney(aRow.allocated_amount),
           createdAt: new Date(aRow.created_at).toISOString()
         });
 
         const newPaidRes = await client.query(
-          `SELECT COALESCE(SUM(COALESCE(allocated_amount, principal_allocated)), 0) AS total_paid FROM public.receipt_allocations WHERE project_invoice_id = $1`,
+          `SELECT COALESCE(SUM(allocated_amount), 0) AS total_paid FROM public.receipt_allocations WHERE project_invoice_id = $1`,
           [alloc.invoiceId]
         );
         const newPaid = parseMoney(newPaidRes.rows[0]?.total_paid ?? '0');
@@ -1725,6 +1815,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         id: rcptRow.id,
         orgId: rcptRow.org_id,
         projectId: rcptRow.project_id,
+        idempotencyKey: rcptRow.idempotency_key || idemKey,
         receiptNumber: rcptRow.receipt_number || undefined,
         receivedAt: rcptRow.received_at,
         bankReference: rcptRow.bank_reference,
@@ -1754,7 +1845,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       SELECT 
         cr.*,
         COALESCE(
-          (SELECT SUM(COALESCE(ra.allocated_amount, ra.principal_allocated))
+          (SELECT SUM(ra.allocated_amount)
            FROM public.receipt_allocations ra
            WHERE ra.cash_receipt_id = cr.id),
           0
@@ -1772,6 +1863,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         id: r.id,
         orgId: r.org_id,
         projectId: r.project_id,
+        idempotencyKey: r.idempotency_key || r.id,
         receiptNumber: r.receipt_number || undefined,
         receivedAt: r.received_at,
         bankReference: r.bank_reference || '',
@@ -1794,7 +1886,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       SELECT 
         cr.*,
         COALESCE(
-          (SELECT SUM(COALESCE(ra.allocated_amount, ra.principal_allocated))
+          (SELECT SUM(ra.allocated_amount)
            FROM public.receipt_allocations ra
            WHERE ra.cash_receipt_id = cr.id),
           0
@@ -1820,6 +1912,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
       id: r.id,
       orgId: r.org_id,
       projectId: r.project_id,
+      idempotencyKey: r.idempotency_key || r.id,
       receiptNumber: r.receipt_number || undefined,
       receivedAt: r.received_at,
       bankReference: r.bank_reference || '',
@@ -1837,7 +1930,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         id: a.id,
         cashReceiptId: a.cash_receipt_id,
         projectInvoiceId: a.project_invoice_id,
-        allocatedAmount: parseMoney(a.allocated_amount || a.principal_allocated),
+        allocatedAmount: parseMoney(a.allocated_amount),
         createdAt: new Date(a.created_at).toISOString()
       }))
     };
@@ -1870,13 +1963,13 @@ export class PostgresLedgerRepository implements ILedgerRepository {
           WHERE k.org_id = $1 AND k.project_id = $2
         ), 0) AS certified,
         COALESCE((
-          SELECT SUM(COALESCE(pia.allocated_amount, pia.allocated_principal))
+          SELECT SUM(pia.allocated_amount)
           FROM public.project_invoice_allocations pia
           JOIN public.project_invoices pi ON pi.id = pia.project_invoice_id
           WHERE pi.org_id = $1 AND pi.project_id = $2
         ), 0) AS invoiced,
         COALESCE((
-          SELECT SUM(COALESCE(ra.allocated_amount, ra.principal_allocated))
+          SELECT SUM(ra.allocated_amount)
           FROM public.receipt_allocations ra
           JOIN public.cash_receipts cr ON cr.id = ra.cash_receipt_id
           WHERE cr.org_id = $1 AND cr.project_id = $2
@@ -2154,6 +2247,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
           id: rcptId,
           orgId: sp.orgId,
           projectId: sp.id,
+          idempotencyKey: rcptId,
           receiptNumber: `RCPT-${sp.code}-01`,
           receivedAt: '2026-09-05',
           bankReference: `BCA-${sp.code}-01`,
@@ -2241,6 +2335,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
           id: rcptId,
           orgId: sp.orgId,
           projectId: sp.id,
+          idempotencyKey: `idempotency-${rcptId}`,
           receiptNumber: `RCPT-${sp.code}-01`,
           receivedAt: '2026-09-05',
           bankReference: `BCA-${sp.code}-01`,
@@ -2328,6 +2423,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
           id: rcptId,
           orgId: sp.orgId,
           projectId: sp.id,
+          idempotencyKey: rcptId,
           receiptNumber: `RCPT-${sp.code}-01`,
           receivedAt: '2026-09-05',
           bankReference: `BCA-${sp.code}-01`,
@@ -2389,6 +2485,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
           id: rcptId,
           orgId: sp.orgId,
           projectId: sp.id,
+          idempotencyKey: `idempotency-${rcptId}`,
           receiptNumber: `RCPT-${sp.code}-01`,
           receivedAt: '2026-09-05',
           bankReference: `BCA-${sp.code}-01`,
@@ -3047,9 +3144,9 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     }
   }
 
-  public async getProjectInvoices(orgId: string, projectId: string): Promise<ProjectInvoiceRecord[]> {
+  public async getProjectInvoices(orgId: string, projectId?: string): Promise<ProjectInvoiceRecord[]> {
     return this.projectInvoices
-      .filter(i => i.orgId === orgId && i.projectId === projectId)
+      .filter(i => i.orgId === orgId && (!projectId || i.projectId === projectId))
       .map(i => {
         let paid = '0.00';
         for (const ra of this.receiptAllocations) {
@@ -3137,6 +3234,40 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
       }
     }
 
+    const idemKey = (input.idempotencyKey || '').trim() || `idem-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const existing = this.cashReceipts.find(
+      r => r.orgId === input.orgId && r.projectId === input.projectId && r.idempotencyKey === idemKey
+    );
+    if (existing) {
+      const existingAllocs = this.receiptAllocations.filter(ra => ra.cashReceiptId === existing.id);
+      const amountMatches = compareMoney(existing.receivedAmount, parsedReceived) === 0;
+
+      let allocsMatch = existingAllocs.length === input.allocations.length;
+      if (allocsMatch) {
+        for (const alloc of input.allocations) {
+          const parsedAllocA = parseMoney(alloc.amount);
+          const match = existingAllocs.find(
+            ra => (ra.projectInvoiceId === alloc.invoiceId || ra.projectInvoiceId === this.projectInvoices.find(i => i.invoiceNumber === alloc.invoiceId)?.id) && compareMoney(ra.allocatedAmount, parsedAllocA) === 0
+          );
+          if (!match) {
+            allocsMatch = false;
+            break;
+          }
+        }
+      }
+
+      if (!amountMatches || !allocsMatch) {
+        const err: any = new Error('Kunci idempotensi sudah digunakan dengan data berbeda.');
+        err.statusCode = 409;
+        throw err;
+      }
+
+      return {
+        ...existing,
+        allocations: existingAllocs.map(a => ({ ...a }))
+      };
+    }
+
     const releaseFns: Array<() => void> = [];
     try {
       let totalAllocated = '0.00';
@@ -3218,6 +3349,7 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         id: rcptId,
         orgId: input.orgId,
         projectId: input.projectId,
+        idempotencyKey: idemKey,
         receiptNumber: rcptNumber || undefined,
         receivedAt,
         bankReference: input.bankReference || 'BANK-RCPT-AUTO',

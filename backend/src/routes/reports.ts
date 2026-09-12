@@ -10,6 +10,7 @@ import {ActionService} from '../services/action.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
 import {getProjectRepository} from '../repositories/project.repository.js';
 import {getLedgerRepository} from '../repositories/ledger.repository.js';
+import {parseMoney, addMoney, subtractMoney, compareMoney} from '../utils/money.js';
 import type {StageValues} from '../types/domain.js';
 
 export const reportsRoute = new Hono();
@@ -117,26 +118,30 @@ reportsRoute.get('/reports/gaps', async (c) => {
 });
 
 // GET /api/reports/aging
-reportsRoute.get('/reports/aging', (c) => {
+reportsRoute.get('/reports/aging', async (c) => {
   const actor = c.get('actor');
   if (!actor.orgId) {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
-  const invoices = db.invoices.filter(i => i.orgId === actor.orgId);
+  const invoices = await getLedgerRepository().getProjectInvoices(actor.orgId);
 
-  let notDue = 0;
-  let overdue1to30 = 0;
-  let overdueOver30 = 0;
+  let notDue = '0.00';
+  let overdue1to30 = '0.00';
+  let overdueOver30 = '0.00';
 
   for (const inv of invoices) {
-    const remaining = inv.principal - inv.paid;
-    if (remaining <= 0) continue;
+    const principal = parseMoney(inv.principalAmount);
+    const paid = parseMoney(inv.paidAmount);
+    const remaining = compareMoney(principal, paid) > 0 ? subtractMoney(principal, paid) : '0.00';
+    if (compareMoney(remaining, '0.00') <= 0) continue;
 
-    const days = ActionService.calculateDaysOverdue(inv.due);
-    if (days === 0) notDue += remaining;
-    else if (days <= 30) overdue1to30 += remaining;
-    else overdueOver30 += remaining;
+    const days = ActionService.calculateDaysOverdue(inv.dueAt);
+    if (days === 0) notDue = addMoney(notDue, remaining);
+    else if (days <= 30) overdue1to30 = addMoney(overdue1to30, remaining);
+    else overdueOver30 = addMoney(overdueOver30, remaining);
   }
+
+  const totalOutstanding = addMoney(addMoney(notDue, overdue1to30), overdueOver30);
 
   return c.json({
     success: true,
@@ -145,7 +150,7 @@ reportsRoute.get('/reports/aging', (c) => {
         notDue,
         overdue1to30,
         overdueOver30,
-        totalOutstanding: notDue + overdue1to30 + overdueOver30
+        totalOutstanding
       },
       cycleTimeDays: {
         opnameToClaim: 12,
@@ -158,22 +163,33 @@ reportsRoute.get('/reports/aging', (c) => {
 });
 
 // GET /api/reports/forecast
-reportsRoute.get('/reports/forecast', (c) => {
+reportsRoute.get('/reports/forecast', async (c) => {
   const actor = c.get('actor');
   if (!actor.orgId) {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
   }
-  // Schedule incoming forecast derived from active projects' invoices
-  const invoices = db.invoices.filter(i => i.orgId === actor.orgId);
-  const incoming = invoices.slice(0, 5).map(inv => ({
-    date: inv.due,
-    project: db.projects.find(p => p.id === inv.projectId)?.name || 'Proyek',
-    invoice: inv.number,
-    amount: inv.principal - inv.paid,
-    confidence: 'Tinggi'
-  }));
+  // Schedule incoming forecast derived from active projects' canonical PostgreSQL invoices
+  const invoices = await getLedgerRepository().getProjectInvoices(actor.orgId);
+  const repoProjects = await getProjectRepository().getProjectsByOrgId(actor.orgId).catch(() => []);
+  const projectMap = new Map<string, string>(repoProjects.map(p => [p.id, p.name]));
 
-  const totalForecast = incoming.reduce((sum, item) => sum + item.amount, 0);
+  const incoming = invoices.slice(0, 5).map(inv => {
+    const principal = parseMoney(inv.principalAmount);
+    const paid = parseMoney(inv.paidAmount);
+    const remaining = compareMoney(principal, paid) > 0 ? subtractMoney(principal, paid) : '0.00';
+    return {
+      date: inv.dueAt,
+      project: projectMap.get(inv.projectId) || 'Proyek',
+      invoice: inv.invoiceNumber,
+      amount: remaining,
+      confidence: 'Tinggi'
+    };
+  });
+
+  let totalForecast = '0.00';
+  for (const item of incoming) {
+    totalForecast = addMoney(totalForecast, item.amount);
+  }
 
   return c.json({
     success: true,
