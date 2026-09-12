@@ -1,14 +1,15 @@
 // ============================================================================
-// COVE Backend — Actions & Blockers API Routes (Gate P0-A.3)
+// COVE Backend — Actions & Blockers API Routes (Gate P0-B.4)
 // Enforces request-scoped actor, fail-closed tenant org isolation, and RBAC checks.
+// Canonical PostgreSQL persistence via ActionRepository.
 // ============================================================================
 
 import {Hono} from 'hono';
-import {db} from '../db/store.js';
-import {ActionService} from '../services/action.service.js';
 import {AuthService} from '../services/auth.service.js';
 import {requireAuth} from '../middleware/auth.middleware.js';
 import {getProjectRepository} from '../repositories/project.repository.js';
+import {getActionRepository} from '../repositories/action.repository.js';
+import {getIdentityRepository} from '../repositories/identity.repository.js';
 
 export const actionsRoute = new Hono();
 
@@ -16,7 +17,7 @@ actionsRoute.use('/actions', requireAuth);
 actionsRoute.use('/actions/*', requireAuth);
 
 // GET /api/actions
-actionsRoute.get('/actions', (c) => {
+actionsRoute.get('/actions', async (c) => {
   const actor = c.get('actor');
   if (!actor.orgId) {
     return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
@@ -24,17 +25,25 @@ actionsRoute.get('/actions', (c) => {
   const projectId = c.req.query('projectId');
   const status = c.req.query('status');
 
-  // Tenant Isolation: only return actions belonging strictly to actor's organization
-  let list = db.actions.filter(a => a.orgId === actor.orgId);
-  if (projectId) list = list.filter(a => a.projectId === projectId);
-  if (status) list = list.filter(a => a.status === status);
+  const repo = getActionRepository();
+  const list = await repo.getActions(actor.orgId, { projectId, status });
 
-  const mapped = list.map(a => ({
-    ...a,
-    daysOverdue: ActionService.calculateDaysOverdue(a.due)
-  }));
+  return c.json({success: true, data: list});
+});
 
-  return c.json({success: true, data: mapped});
+// GET /api/actions/:id
+actionsRoute.get('/actions/:id', async (c) => {
+  const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
+  const id = c.req.param('id');
+  const repo = getActionRepository();
+  const item = await repo.getActionById(actor.orgId, id);
+  if (!item) {
+    return c.json({success: false, error: 'Tindakan tidak ditemukan.'}, 404);
+  }
+  return c.json({success: true, data: item});
 });
 
 // POST /api/actions
@@ -53,27 +62,38 @@ actionsRoute.post('/actions', async (c) => {
   }
 
   // Ensure project exists and belongs strictly to actor's organization
-  const project = (await getProjectRepository().getProjectById(actor.orgId, body.projectId)) || db.projects.find(p => p.id === body.projectId && p.orgId === actor.orgId);
+  const project = await getProjectRepository().getProjectById(actor.orgId, body.projectId);
   if (!project) {
     return c.json({success: false, error: 'Proyek tidak ditemukan pada organisasi ini.'}, 404);
   }
 
-  const newAction = ActionService.createAction({
-    projectId: body.projectId,
-    title: body.title,
-    blocker: body.blocker,
-    owner: body.owner || actor.fullName,
-    due: body.due || '2026-09-09',
-    severity: body.severity || 'Sedang',
-    value: Number(body.value) || 0
-  });
+  // Validate assignee/owner does not belong to another tenant
+  const assigneeId = body.assigneeId || body.ownerId;
+  if (assigneeId) {
+    const identityRepo = getIdentityRepository();
+    const memberships = await identityRepo.getActiveMembershipsByProfileId(assigneeId);
+    if (!memberships.some(m => m.orgId === actor.orgId)) {
+      return c.json({success: false, error: 'PIC/Assignee bukan anggota organisasi ini.'}, 400);
+    }
+  }
 
-  // Stamp orgId
-  newAction.orgId = actor.orgId;
-  db.actions.unshift(newAction);
-  db.save();
+  try {
+    const repo = getActionRepository();
+    const newAction = await repo.createAction({
+      orgId: actor.orgId,
+      projectId: body.projectId,
+      title: body.title,
+      blocker: body.blocker,
+      owner: body.owner || actor.fullName,
+      due: body.due || '2026-09-09',
+      severity: body.severity || 'Sedang',
+      value: Number(body.value) || 0
+    });
 
-  return c.json({success: true, data: newAction}, 201);
+    return c.json({success: true, data: newAction}, 201);
+  } catch (err: any) {
+    return c.json({success: false, error: err.message}, err.statusCode || 500);
+  }
 });
 
 // POST /api/actions/:id/notes
@@ -87,19 +107,67 @@ actionsRoute.post('/actions/:id/notes', async (c) => {
   }
 
   const id = c.req.param('id');
-  const action = db.actions.find(a => a.id === id && a.orgId === actor.orgId);
-  if (!action) {
-    return c.json({success: false, error: 'Tindakan tidak ditemukan.'}, 404);
-  }
-
   const body = await c.req.json().catch(() => ({}));
   const note = body.note || '';
   const resolve = Boolean(body.resolve);
 
-  const result = ActionService.addNoteOrResolve(id, note, actor.fullName, resolve);
-  if (!result.success) {
-    return c.json({success: false, error: result.error}, 400);
+  const repo = getActionRepository();
+  const updated = await repo.addNoteOrResolve(actor.orgId, id, note, actor.fullName, resolve);
+  if (!updated) {
+    return c.json({success: false, error: 'Tindakan tidak ditemukan.'}, 404);
   }
 
-  return c.json({success: true, data: result.action});
+  return c.json({success: true, data: updated});
+});
+
+// PATCH /api/actions/:id
+actionsRoute.patch('/actions/:id', async (c) => {
+  const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
+  if (!AuthService.canWrite(actor.role)) {
+    return c.json({success: false, error: 'Hak akses tidak mencukupi untuk mengubah tindakan.'}, 403);
+  }
+
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+
+  // Validate assignee/owner does not belong to another tenant
+  const assigneeId = body.assigneeId || body.ownerId;
+  if (assigneeId) {
+    const identityRepo = getIdentityRepository();
+    const memberships = await identityRepo.getActiveMembershipsByProfileId(assigneeId);
+    if (!memberships.some(m => m.orgId === actor.orgId)) {
+      return c.json({success: false, error: 'PIC/Assignee bukan anggota organisasi ini.'}, 400);
+    }
+  }
+
+  const repo = getActionRepository();
+  const updated = await repo.updateAction(actor.orgId, id, body);
+  if (!updated) {
+    return c.json({success: false, error: 'Tindakan tidak ditemukan.'}, 404);
+  }
+
+  return c.json({success: true, data: updated});
+});
+
+// DELETE /api/actions/:id
+actionsRoute.delete('/actions/:id', async (c) => {
+  const actor = c.get('actor');
+  if (!actor.orgId) {
+    return c.json({success: false, code: 'TENANT_SELECTION_REQUIRED', error: 'Organisasi aktif diperlukan.'}, 400);
+  }
+  if (!AuthService.canWrite(actor.role)) {
+    return c.json({success: false, error: 'Hak akses tidak mencukupi untuk menghapus tindakan.'}, 403);
+  }
+
+  const id = c.req.param('id');
+  const repo = getActionRepository();
+  const deleted = await repo.deleteAction(actor.orgId, id);
+  if (!deleted) {
+    return c.json({success: false, error: 'Tindakan tidak ditemukan.'}, 404);
+  }
+
+  return c.json({success: true, message: 'Tindakan berhasil dihapus.'});
 });
