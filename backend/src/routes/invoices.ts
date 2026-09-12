@@ -241,6 +241,7 @@ invoicesRoute.post('/invoices/receipts', async (c) => {
       receiptNumber: body.receiptNumber,
       receivedAt: body.receivedDate || body.receivedAt,
       bankReference: body.bankReference,
+      currency: body.currency,
       paymentMethod: body.paymentMethod,
       description: body.description,
       notes: body.notes,

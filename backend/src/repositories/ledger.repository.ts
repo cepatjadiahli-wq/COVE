@@ -268,6 +268,7 @@ export interface CreateCashReceiptInput {
   receiptNumber?: string;
   receivedAt?: string;
   bankReference?: string;
+  currency?: string;
   paymentMethod?: string;
   receivedAmount: MoneyInput;
   description?: string;
@@ -276,6 +277,91 @@ export interface CreateCashReceiptInput {
     invoiceId: string;
     amount: MoneyInput;
   }>;
+}
+
+export interface CanonicalCashReceiptCommand {
+  projectId: string;
+  receivedAmount: MoneyString;
+  receivedAt: string;
+  currency: string;
+  receiptNumber: string;
+  bankReference: string;
+  paymentMethod: string;
+  description: string;
+  notes: string;
+  allocations: Array<{
+    invoiceId: string;
+    amount: MoneyString;
+  }>;
+}
+
+export function canonicalizeCashReceiptCommand(input: {
+  projectId: string;
+  receivedAmount: MoneyInput;
+  receivedAt?: string | Date;
+  currency?: string | null;
+  receiptNumber?: string | null;
+  bankReference?: string | null;
+  paymentMethod?: string | null;
+  description?: string | null;
+  notes?: string | null;
+  allocations?: Array<{
+    invoiceId?: string;
+    projectInvoiceId?: string;
+    project_invoice_id?: string;
+    amount?: MoneyInput;
+    allocatedAmount?: MoneyInput;
+    allocated_amount?: MoneyInput;
+  }>;
+}): CanonicalCashReceiptCommand {
+  const normDate = (d?: string | Date): string => {
+    if (!d) return new Date().toISOString().split('T')[0];
+    if (d instanceof Date) return d.toISOString().split('T')[0];
+    return String(d).trim().split('T')[0];
+  };
+
+  const normAllocations = (input.allocations || []).map(a => ({
+    invoiceId: String(a.invoiceId || (a as any).projectInvoiceId || (a as any).project_invoice_id || '').trim(),
+    amount: parseMoney(a.amount ?? (a as any).allocatedAmount ?? (a as any).allocated_amount ?? 0)
+  })).sort((a, b) => {
+    const cmp = a.invoiceId.localeCompare(b.invoiceId);
+    if (cmp !== 0) return cmp;
+    return compareMoney(a.amount, b.amount);
+  });
+
+  return {
+    projectId: String(input.projectId || '').trim(),
+    receivedAmount: parseMoney(input.receivedAmount),
+    receivedAt: normDate(input.receivedAt),
+    currency: (input.currency || 'IDR').trim().toUpperCase(),
+    receiptNumber: (input.receiptNumber || '').trim(),
+    bankReference: (input.bankReference || 'BANK-RCPT-AUTO').trim(),
+    paymentMethod: (input.paymentMethod || 'BANK_TRANSFER').trim().toUpperCase(),
+    description: (input.description || '').trim(),
+    notes: (input.notes || '').trim(),
+    allocations: normAllocations
+  };
+}
+
+export function isSameCashReceiptCommand(
+  a: CanonicalCashReceiptCommand,
+  b: CanonicalCashReceiptCommand
+): boolean {
+  if (a.projectId !== b.projectId) return false;
+  if (compareMoney(a.receivedAmount, b.receivedAmount) !== 0) return false;
+  if (a.receivedAt !== b.receivedAt) return false;
+  if (a.currency !== b.currency) return false;
+  if (a.receiptNumber !== b.receiptNumber) return false;
+  if (a.bankReference !== b.bankReference) return false;
+  if (a.paymentMethod !== b.paymentMethod) return false;
+  if (a.description !== b.description) return false;
+  if (a.notes !== b.notes) return false;
+  if (a.allocations.length !== b.allocations.length) return false;
+  for (let i = 0; i < a.allocations.length; i++) {
+    if (a.allocations[i].invoiceId !== b.allocations[i].invoiceId) return false;
+    if (compareMoney(a.allocations[i].amount, b.allocations[i].amount) !== 0) return false;
+  }
+  return true;
 }
 
 export interface ILedgerRepository {
@@ -1605,29 +1691,39 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         [existingRow.id]
       );
 
-      const existingReceived = parseMoney(existingRow.received_amount);
-      const amountMatches = compareMoney(existingReceived, parsedReceived) === 0;
+      const existingCmd = canonicalizeCashReceiptCommand({
+        projectId: existingRow.project_id,
+        receivedAmount: existingRow.received_amount,
+        receivedAt: existingRow.received_at,
+        currency: existingRow.currency,
+        receiptNumber: existingRow.receipt_number,
+        bankReference: existingRow.bank_reference,
+        paymentMethod: existingRow.payment_method,
+        description: existingRow.description,
+        notes: existingRow.notes,
+        allocations: existingAllocRes.rows
+      });
 
-      let allocsMatch = existingAllocRes.rows.length === input.allocations.length;
-      if (allocsMatch) {
-        for (const alloc of input.allocations) {
-          const parsedAllocA = parseMoney(alloc.amount);
-          const match = existingAllocRes.rows.find(
-            r => r.project_invoice_id === alloc.invoiceId && compareMoney(parseMoney(r.allocated_amount), parsedAllocA) === 0
-          );
-          if (!match) {
-            allocsMatch = false;
-            break;
-          }
-        }
-      }
+      const incomingCmd = canonicalizeCashReceiptCommand({
+        projectId: input.projectId,
+        receivedAmount: input.receivedAmount,
+        receivedAt: input.receivedAt,
+        currency: input.currency,
+        receiptNumber: input.receiptNumber,
+        bankReference: input.bankReference,
+        paymentMethod: input.paymentMethod,
+        description: input.description,
+        notes: input.notes,
+        allocations: input.allocations
+      });
 
-      if (!amountMatches || !allocsMatch) {
+      if (!isSameCashReceiptCommand(existingCmd, incomingCmd)) {
         const err: any = new Error('RECEIPT_IDEMPOTENCY_CONFLICT: Kunci idempotensi sudah digunakan dengan data berbeda.');
         err.statusCode = 409;
         throw err;
       }
 
+      const existingReceived = parseMoney(existingRow.received_amount);
       let existingAllocTotal = '0.00';
       for (const r of existingAllocRes.rows) {
         existingAllocTotal = addMoney(existingAllocTotal, parseMoney(r.allocated_amount));
@@ -1676,8 +1772,9 @@ export class PostgresLedgerRepository implements ILedgerRepository {
     }
 
     const releaseFns: (() => void)[] = [];
-    for (const alloc of input.allocations) {
-      releaseFns.push(await this.acquireLock(`inv-${alloc.invoiceId}`));
+    const uniqueInvoiceIds = [...new Set(input.allocations.map(a => a.invoiceId))];
+    for (const invId of uniqueInvoiceIds) {
+      releaseFns.push(await this.acquireLock(`inv-${invId}`));
     }
 
     const client = await this.getClient();
@@ -1731,7 +1828,13 @@ export class PostgresLedgerRepository implements ILedgerRepository {
         throw err;
       }
 
-      const receivedAt = input.receivedAt || new Date().toISOString().split('T')[0];
+      const receivedAt = input.receivedAt ? String(input.receivedAt).trim().split('T')[0] : new Date().toISOString().split('T')[0];
+      const currency = (input.currency || 'IDR').trim().toUpperCase();
+      const bankRef = (input.bankReference || 'BANK-RCPT-AUTO').trim();
+      const payMethod = (input.paymentMethod || 'BANK_TRANSFER').trim().toUpperCase();
+      const desc = (input.description || '').trim();
+      const notes = (input.notes || '').trim();
+
       const rcptInsertRes = await client.query(
         `INSERT INTO public.cash_receipts (
           org_id,
@@ -1748,7 +1851,7 @@ export class PostgresLedgerRepository implements ILedgerRepository {
           notes,
           created_at,
           updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, 'IDR', $7, 'SETTLED', $8, $9, $10, NOW(), NOW())
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'SETTLED', $9, $10, $11, NOW(), NOW())
         RETURNING *`,
         [
           input.orgId,
@@ -1756,11 +1859,12 @@ export class PostgresLedgerRepository implements ILedgerRepository {
           idemKey,
           receiptNumber || null,
           receivedAt,
-          input.bankReference || 'BANK-RCPT-AUTO',
+          bankRef,
+          currency,
           parsedReceived,
-          input.paymentMethod || 'BANK_TRANSFER',
-          input.description || '',
-          input.notes || ''
+          payMethod,
+          desc,
+          notes
         ]
       );
       const rcptRow = rcptInsertRes.rows[0];
@@ -1857,29 +1961,39 @@ export class PostgresLedgerRepository implements ILedgerRepository {
             [raceRow.id]
           );
 
-          const raceReceived = parseMoney(raceRow.received_amount);
-          const amountMatches = compareMoney(raceReceived, parsedReceived) === 0;
+          const raceCmd = canonicalizeCashReceiptCommand({
+            projectId: raceRow.project_id,
+            receivedAmount: raceRow.received_amount,
+            receivedAt: raceRow.received_at,
+            currency: raceRow.currency,
+            receiptNumber: raceRow.receipt_number,
+            bankReference: raceRow.bank_reference,
+            paymentMethod: raceRow.payment_method,
+            description: raceRow.description,
+            notes: raceRow.notes,
+            allocations: raceAllocRes.rows
+          });
 
-          let allocsMatch = raceAllocRes.rows.length === input.allocations.length;
-          if (allocsMatch) {
-            for (const alloc of input.allocations) {
-              const parsedAllocA = parseMoney(alloc.amount);
-              const match = raceAllocRes.rows.find(
-                r => r.project_invoice_id === alloc.invoiceId && compareMoney(parseMoney(r.allocated_amount), parsedAllocA) === 0
-              );
-              if (!match) {
-                allocsMatch = false;
-                break;
-              }
-            }
-          }
+          const incomingCmd = canonicalizeCashReceiptCommand({
+            projectId: input.projectId,
+            receivedAmount: input.receivedAmount,
+            receivedAt: input.receivedAt,
+            currency: input.currency,
+            receiptNumber: input.receiptNumber,
+            bankReference: input.bankReference,
+            paymentMethod: input.paymentMethod,
+            description: input.description,
+            notes: input.notes,
+            allocations: input.allocations
+          });
 
-          if (!amountMatches || !allocsMatch) {
+          if (!isSameCashReceiptCommand(raceCmd, incomingCmd)) {
             const conflictErr: any = new Error('RECEIPT_IDEMPOTENCY_CONFLICT: Kunci idempotensi sudah digunakan dengan data berbeda.');
             conflictErr.statusCode = 409;
             throw conflictErr;
           }
 
+          const raceReceived = parseMoney(raceRow.received_amount);
           let raceAllocTotal = '0.00';
           for (const r of raceAllocRes.rows) {
             raceAllocTotal = addMoney(raceAllocTotal, parseMoney(r.allocated_amount));
@@ -3323,23 +3437,43 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     );
     if (existing) {
       const existingAllocs = this.receiptAllocations.filter(ra => ra.cashReceiptId === existing.id);
-      const amountMatches = compareMoney(existing.receivedAmount, parsedReceived) === 0;
 
-      let allocsMatch = existingAllocs.length === input.allocations.length;
-      if (allocsMatch) {
-        for (const alloc of input.allocations) {
-          const parsedAllocA = parseMoney(alloc.amount);
-          const match = existingAllocs.find(
-            ra => (ra.projectInvoiceId === alloc.invoiceId || ra.projectInvoiceId === this.projectInvoices.find(i => i.invoiceNumber === alloc.invoiceId)?.id) && compareMoney(ra.allocatedAmount, parsedAllocA) === 0
-          );
-          if (!match) {
-            allocsMatch = false;
-            break;
-          }
-        }
-      }
+      const existingCmd = canonicalizeCashReceiptCommand({
+        projectId: existing.projectId,
+        receivedAmount: existing.receivedAmount,
+        receivedAt: existing.receivedAt,
+        currency: existing.currency,
+        receiptNumber: existing.receiptNumber,
+        bankReference: existing.bankReference,
+        paymentMethod: existing.paymentMethod,
+        description: existing.description,
+        notes: existing.notes,
+        allocations: existingAllocs.map(a => ({
+          invoiceId: a.projectInvoiceId,
+          amount: a.allocatedAmount
+        }))
+      });
 
-      if (!amountMatches || !allocsMatch) {
+      const incomingCmd = canonicalizeCashReceiptCommand({
+        projectId: input.projectId,
+        receivedAmount: input.receivedAmount,
+        receivedAt: input.receivedAt,
+        currency: input.currency,
+        receiptNumber: input.receiptNumber,
+        bankReference: input.bankReference,
+        paymentMethod: input.paymentMethod,
+        description: input.description,
+        notes: input.notes,
+        allocations: input.allocations.map(a => {
+          const inv = this.projectInvoices.find(i => i.orgId === input.orgId && i.projectId === input.projectId && (i.id === a.invoiceId || i.invoiceNumber === a.invoiceId));
+          return {
+            invoiceId: inv ? inv.id : a.invoiceId,
+            amount: a.amount
+          };
+        })
+      });
+
+      if (!isSameCashReceiptCommand(existingCmd, incomingCmd)) {
         const err: any = new Error('RECEIPT_IDEMPOTENCY_CONFLICT: Kunci idempotensi sudah digunakan dengan data berbeda.');
         err.statusCode = 409;
         throw err;
@@ -3362,6 +3496,10 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
     }
 
     const releaseFns: Array<() => void> = [];
+    const uniqueInvoiceIds = [...new Set(input.allocations.map(a => a.invoiceId))];
+    for (const invId of uniqueInvoiceIds) {
+      releaseFns.push(await this.acquireLock(`inv-${invId}`));
+    }
     try {
       let totalAllocated = '0.00';
       const parsedAllocs: Array<{ invoiceId: string; amount: MoneyString }> = [];
@@ -3373,8 +3511,6 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
           err.statusCode = 400;
           throw err;
         }
-
-        releaseFns.push(await this.acquireLock(`inv-${alloc.invoiceId}`));
 
         let inv = this.projectInvoices.find(i => i.orgId === input.orgId && i.projectId === input.projectId && (i.id === alloc.invoiceId || i.invoiceNumber === alloc.invoiceId));
         if (!inv) {
@@ -3444,16 +3580,16 @@ export class InMemoryLedgerRepository implements ILedgerRepository {
         projectId: input.projectId,
         idempotencyKey: idemKey,
         receiptNumber: rcptNumber || undefined,
-        receivedAt,
-        bankReference: input.bankReference || 'BANK-RCPT-AUTO',
-        currency: 'IDR',
+        receivedAt: String(receivedAt).trim().split('T')[0],
+        bankReference: (input.bankReference || 'BANK-RCPT-AUTO').trim(),
+        currency: (input.currency || 'IDR').trim().toUpperCase(),
         receivedAmount: parsedReceived,
         allocatedAmount: totalAllocated,
         unallocatedAmount: unallocated,
         settlementStatus: 'SETTLED',
-        paymentMethod: input.paymentMethod || 'BANK_TRANSFER',
-        description: input.description || '',
-        notes: input.notes || undefined,
+        paymentMethod: (input.paymentMethod || 'BANK_TRANSFER').trim().toUpperCase(),
+        description: (input.description || '').trim(),
+        notes: (input.notes || '').trim() || undefined,
         createdAt: now,
         updatedAt: now
       };

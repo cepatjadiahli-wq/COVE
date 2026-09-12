@@ -51,6 +51,9 @@ let baseMeasAId: string = '';
 let baseClaimAId: string = '';
 let baseCertAId: string = '';
 let baseInvoiceAId: string = '';
+let baseInvoiceA2Id: string = '';
+let baseInvoiceBId: string = '';
+let baseCertBId: string = '';
 
 before(async () => {
   db.reset();
@@ -207,6 +210,15 @@ before(async () => {
     allocations: [{ certificateId: baseCertAId, amount: '500000000.00' }]
   });
   baseInvoiceAId = inv.id;
+
+  const inv2 = await pgLedgerRepo.createProjectInvoice({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    invoiceNumber: 'INV-P0B3F-02',
+    dueAt: '2026-10-01',
+    allocations: [{ certificateId: baseCertAId, amount: '300000000.00' }]
+  });
+  baseInvoiceA2Id = inv2.id;
 });
 
 // ============================================================================
@@ -474,12 +486,14 @@ test('P0B3F-11: Same idempotency key across different tenants / projects does no
     certificateNumber: 'BAP-B-IDEM',
     allocations: [{ claimId: claimB.id, amount: '300000000.00' }]
   });
+  baseCertBId = certB.id;
   const invB = await pgLedgerRepo.createProjectInvoice({
     orgId: ORG_B_ID,
     projectId: PROJ_B_1,
     invoiceNumber: 'INV-B-IDEM-01',
     allocations: [{ certificateId: certB.id, amount: '100000000.00' }]
   });
+  baseInvoiceBId = invB.id;
 
   // Tenant B uses the same idempotency key that Tenant A used in P0B3F-06
   const rcptB = await pgLedgerRepo.createCashReceipt({
@@ -504,6 +518,7 @@ test('P0B3F-12: Idempotency replay works across app/repository restart', async (
     orgId: ORG_A_ID,
     projectId: PROJ_A_1,
     idempotencyKey: 'IDEM-P0B3F-VALID-01',
+    receiptNumber: 'RCPT-P0B3F-01',
     receivedAmount: '50000000.00',
     allocations: [{ invoiceId: baseInvoiceAId, amount: '50000000.00' }]
   });
@@ -820,4 +835,531 @@ test('P0B3F-24: Attempting to delete invoice with downstream receipt fails (REST
       return true;
     }
   );
+});
+
+// ============================================================================
+// P0-B3.3: Canonical Receipt Idempotency Fingerprint Tests (P0B3I-01 .. P0B3I-18)
+// ============================================================================
+
+test('P0B3I-01: Same full command replays original receipt', async () => {
+  const KEY = 'P0B3I-KEY-01';
+  const payload = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receiptNumber: 'RCPT-I-01',
+    receivedAt: '2026-09-12',
+    currency: 'IDR',
+    bankReference: 'BANK-BCA-01',
+    paymentMethod: 'BANK_TRANSFER',
+    receivedAmount: '1000000.00',
+    description: 'Pembayaran Termin 1',
+    notes: 'Catatan transfer',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  const first = await pgLedgerRepo.createCashReceipt(payload);
+  const replay = await pgLedgerRepo.createCashReceipt(payload);
+
+  assert.strictEqual(first.id, replay.id);
+  assert.strictEqual(first.receivedAmount, replay.receivedAmount);
+  assert.strictEqual(first.receiptNumber, replay.receiptNumber);
+});
+
+test('P0B3I-02: receivedAmount difference conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-02';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        receivedAmount: '1000000.01',
+        allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.01' }]
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-03: receivedAt difference conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-03';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAt: '2026-09-12',
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        receivedAt: '2026-09-13'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-04: currency difference conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-04';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    currency: 'IDR',
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        currency: 'USD'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-05: receiptNumber difference conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-05';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receiptNumber: 'RCPT-ORIG-01',
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        receiptNumber: 'RCPT-DIFF-02'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-06: bankReference difference conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-06';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    bankReference: 'BANK-MANDIRI-ORIG',
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        bankReference: 'BANK-BCA-DIFF'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-07: paymentMethod difference conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-07';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    paymentMethod: 'BANK_TRANSFER',
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        paymentMethod: 'CASH'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-08: description difference follows documented policy (conflicts 409)', async () => {
+  const KEY = 'P0B3I-KEY-08';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    description: 'Deskripsi Asli',
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        description: 'Deskripsi Berbeda'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-09: notes difference follows documented policy (conflicts 409)', async () => {
+  const KEY = 'P0B3I-KEY-09';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    notes: 'Catatan 1',
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        notes: 'Catatan 2 Berbeda'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-10: allocation invoice difference conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-10';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '1000000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '1000000.00' }]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        allocations: [{ invoiceId: baseInvoiceA2Id, amount: '1000000.00' }]
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-11: allocation amount difference conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-11';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '1000000.00',
+    allocations: [
+      { invoiceId: baseInvoiceAId, amount: '600000.00' },
+      { invoiceId: baseInvoiceA2Id, amount: '400000.00' }
+    ]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        allocations: [
+          { invoiceId: baseInvoiceAId, amount: '500000.00' },
+          { invoiceId: baseInvoiceA2Id, amount: '500000.00' }
+        ]
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-12: allocation order permutation replays (200)', async () => {
+  const KEY = 'P0B3I-KEY-12';
+  const base1 = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '1000000.00',
+    allocations: [
+      { invoiceId: baseInvoiceAId, amount: '600000.00' },
+      { invoiceId: baseInvoiceA2Id, amount: '400000.00' }
+    ]
+  };
+
+  const base2 = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '1000000.00',
+    allocations: [
+      { invoiceId: baseInvoiceA2Id, amount: '400000.00' },
+      { invoiceId: baseInvoiceAId, amount: '600000.00' }
+    ]
+  };
+
+  const r1 = await pgLedgerRepo.createCashReceipt(base1);
+  const r2 = await pgLedgerRepo.createCashReceipt(base2);
+
+  assert.strictEqual(r1.id, r2.id);
+});
+
+test('P0B3I-13: duplicate-allocation multiset mismatch conflicts (409)', async () => {
+  const KEY = 'P0B3I-KEY-13';
+  const base1 = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '300000.00',
+    allocations: [
+      { invoiceId: baseInvoiceAId, amount: '100000.00' },
+      { invoiceId: baseInvoiceAId, amount: '200000.00' }
+    ]
+  };
+
+  await pgLedgerRepo.createCashReceipt(base1);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        orgId: ORG_A_ID,
+        projectId: PROJ_A_1,
+        idempotencyKey: KEY,
+        receivedAmount: '300000.00',
+        allocations: [
+          { invoiceId: baseInvoiceAId, amount: '100000.00' },
+          { invoiceId: baseInvoiceAId, amount: '100000.00' }
+        ]
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-14: duplicate-allocation identical multiset replays (200)', async () => {
+  const KEY = 'P0B3I-KEY-14';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '200000.00',
+    allocations: [
+      { invoiceId: baseInvoiceAId, amount: '100000.00' },
+      { invoiceId: baseInvoiceAId, amount: '100000.00' }
+    ]
+  };
+
+  const r1 = await pgLedgerRepo.createCashReceipt(base);
+  const r2 = await pgLedgerRepo.createCashReceipt(base);
+
+  assert.strictEqual(r1.id, r2.id);
+});
+
+test('P0B3I-15: 23505 recovery uses full fingerprint', async () => {
+  const KEY = 'P0B3I-KEY-15';
+  const base = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    bankReference: 'BANK-REF-23505-A',
+    receivedAmount: '500000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '500000.00' }]
+  };
+
+  const r1 = await pgLedgerRepo.createCashReceipt(base);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        ...base,
+        bankReference: 'BANK-REF-23505-B'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-16: concurrent bankReference conflict returns one success + one conflict', async () => {
+  const KEY = 'P0B3I-KEY-16';
+  const reqA = pgLedgerRepo.createCashReceipt({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    bankReference: 'BANK-CONCUR-A',
+    receivedAmount: '500000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '500000.00' }]
+  });
+
+  const reqB = pgLedgerRepo.createCashReceipt({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    bankReference: 'BANK-CONCUR-B',
+    receivedAmount: '500000.00',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '500000.00' }]
+  });
+
+  const results = await Promise.allSettled([reqA, reqB]);
+  const fulfilled = results.filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled');
+  const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+
+  assert.strictEqual(fulfilled.length, 1, 'Exactly one concurrent request must succeed');
+  assert.strictEqual(rejected.length, 1, 'Conflicting concurrent request must reject with 409');
+  assert.strictEqual((rejected[0].reason as any).statusCode, 409);
+  assert.ok((rejected[0].reason as any).message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+});
+
+test('P0B3I-17: restart preserves full command semantics', async () => {
+  const KEY = 'P0B3I-KEY-17';
+  const payload = {
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receiptNumber: 'RCPT-RESTART-01',
+    receivedAt: '2026-09-12',
+    currency: 'IDR',
+    bankReference: 'BANK-RESTART',
+    paymentMethod: 'BANK_TRANSFER',
+    receivedAmount: '500000.00',
+    description: 'Restart test description',
+    notes: 'Restart test notes',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '500000.00' }]
+  };
+
+  const r1 = await pgLedgerRepo.createCashReceipt(payload);
+
+  const freshRepo = new PostgresLedgerRepository(pglite as any);
+  const replayed = await freshRepo.createCashReceipt(payload);
+  assert.strictEqual(replayed.id, r1.id);
+
+  await assert.rejects(
+    async () => {
+      await freshRepo.createCashReceipt({
+        ...payload,
+        bankReference: 'BANK-RESTART-CHANGED'
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3I-18: tenant scoping remains independent', async () => {
+  const KEY = 'P0B3I-KEY-18-SHARED';
+
+  const rTenantA = await pgLedgerRepo.createCashReceipt({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '200000.00',
+    allocations: [{ invoiceId: baseInvoiceA2Id, amount: '200000.00' }]
+  });
+
+  const invB2 = await pgLedgerRepo.createProjectInvoice({
+    orgId: ORG_B_ID,
+    projectId: PROJ_B_1,
+    invoiceNumber: 'INV-B-IDEM-02',
+    allocations: [{ certificateId: baseCertBId, amount: '100000000.00' }]
+  });
+
+  const rTenantB = await pgLedgerRepo.createCashReceipt({
+    orgId: ORG_B_ID,
+    projectId: PROJ_B_1,
+    idempotencyKey: KEY,
+    receivedAmount: '200000.00',
+    allocations: [{ invoiceId: invB2.id, amount: '200000.00' }]
+  });
+
+  assert.ok(rTenantA.id);
+  assert.ok(rTenantB.id);
+  assert.notStrictEqual(rTenantA.id, rTenantB.id);
+  assert.strictEqual(rTenantA.orgId, ORG_A_ID);
+  assert.strictEqual(rTenantB.orgId, ORG_B_ID);
 });
