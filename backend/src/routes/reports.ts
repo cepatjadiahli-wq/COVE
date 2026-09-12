@@ -26,7 +26,9 @@ async function enrichProjectsWithLedger(orgId: string, projects: any[]) {
         const m = Number(totals.measured);
         const c = Number(totals.claimed);
         const s = Number(totals.certified);
-        if (w > 0 || m > 0 || c > 0 || s > 0) {
+        const inv = Number(totals.invoiced);
+        const col = Number(totals.collected);
+        if (w > 0 || m > 0 || c > 0 || s > 0 || inv > 0 || col > 0) {
           return {
             ...p,
             values: [
@@ -34,8 +36,8 @@ async function enrichProjectsWithLedger(orgId: string, projects: any[]) {
               m,
               c,
               s,
-              p.values[4] || 0,
-              p.values[5] || 0
+              inv,
+              col
             ] as StageValues
           };
         }

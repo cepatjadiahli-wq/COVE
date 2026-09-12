@@ -53,8 +53,8 @@ ledgerRoute.get('/projects/:id/ledger', async (c) => {
     Number(totals.measured),
     Number(totals.claimed),
     Number(totals.certified),
-    project.values[4] || 0,
-    project.values[5] || 0
+    Number(totals.invoiced),
+    Number(totals.collected)
   ];
 
   const metrics = LedgerService.calculateMetrics(canonicalValues);

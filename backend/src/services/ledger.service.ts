@@ -223,13 +223,89 @@ export class LedgerService {
             description: reason,
             allocations
           });
-        } else {
-          // Stages 4 and 5 are transitional until P0-B3
-          const numAmount = Number(amount);
-          if (stageIndex > 0 && numAmount > project.values[stageIndex - 1]) {
-            return {success: false, error: 'Nilai tahap tidak boleh melebihi nilai tahap sebelumnya.'};
+        } else if (stageIndex === 4) {
+          // Stage 4: Project Invoice
+          const certs = await ledgerRepo.getCertificates(orgId, projectId);
+          const invs = await ledgerRepo.getProjectInvoices(orgId, projectId);
+          let totalAvailable = '0.00';
+          const certAvailableMap = new Map<string, string>();
+          for (const k of certs) {
+            const certDetail = await ledgerRepo.getCertificateById(orgId, projectId, k.id);
+            const certTotal = certDetail?.totalAllocatedAmount || k.totalAllocatedAmount;
+            let totalInvoicedForCert = '0.00';
+            for (const inv of invs) {
+              const invDetail = await ledgerRepo.getProjectInvoiceById(orgId, projectId, inv.id);
+              if (invDetail?.allocations) {
+                for (const pia of invDetail.allocations) {
+                  if (pia.certificateId === k.id) {
+                    totalInvoicedForCert = addMoney(totalInvoicedForCert, pia.allocatedAmount);
+                  }
+                }
+              }
+            }
+            const avail = compareMoney(certTotal, totalInvoicedForCert) > 0 ? subtractMoney(certTotal, totalInvoicedForCert) : '0.00';
+            certAvailableMap.set(k.id, avail);
+            totalAvailable = addMoney(totalAvailable, avail);
           }
-          project.values[stageIndex] = numAmount;
+
+          if (compareMoney(amount, totalAvailable) > 0) {
+            return {
+              success: false,
+              error: `Nilai invoice (${amount}) melebihi sisa sertifikasi yang belum ditagihkan (${totalAvailable}).`
+            };
+          }
+
+          let remainingToAllocate = amount;
+          const allocations: {certificateId: string; amount: string}[] = [];
+          for (const k of certs) {
+            if (compareMoney(remainingToAllocate, '0.00') <= 0) break;
+            const avail = certAvailableMap.get(k.id) || '0.00';
+            if (compareMoney(avail, '0.00') <= 0) continue;
+            const allocAmount = compareMoney(remainingToAllocate, avail) < 0 ? remainingToAllocate : avail;
+            allocations.push({certificateId: k.id, amount: allocAmount});
+            remainingToAllocate = subtractMoney(remainingToAllocate, allocAmount);
+          }
+
+          await ledgerRepo.createProjectInvoice({
+            orgId,
+            projectId,
+            invoiceNumber: reference,
+            description: reason,
+            allocations
+          });
+        } else if (stageIndex === 5) {
+          // Stage 5: Cash Receipt
+          const invs = await ledgerRepo.getProjectInvoices(orgId, projectId);
+          const availableInvs = invs.filter(i => compareMoney(i.remainingAmount, '0.00') > 0);
+          let totalAvailable = '0.00';
+          for (const inv of availableInvs) {
+            totalAvailable = addMoney(totalAvailable, inv.remainingAmount);
+          }
+
+          if (compareMoney(amount, totalAvailable) > 0) {
+            return {
+              success: false,
+              error: `Nilai kas masuk (${amount}) melebihi sisa tagihan yang belum diterima (${totalAvailable}).`
+            };
+          }
+
+          let remainingToAllocate = amount;
+          const allocations: {invoiceId: string; amount: string}[] = [];
+          for (const inv of availableInvs) {
+            if (compareMoney(remainingToAllocate, '0.00') <= 0) break;
+            const allocAmount = compareMoney(remainingToAllocate, inv.remainingAmount) < 0 ? remainingToAllocate : inv.remainingAmount;
+            allocations.push({invoiceId: inv.id, amount: allocAmount});
+            remainingToAllocate = subtractMoney(remainingToAllocate, allocAmount);
+          }
+
+          await ledgerRepo.createCashReceipt({
+            orgId,
+            projectId,
+            receiptNumber: reference,
+            receivedAmount: amount,
+            description: reason,
+            allocations
+          });
         }
 
         const totals = await ledgerRepo.getLedgerTotals(orgId, projectId);
@@ -238,8 +314,8 @@ export class LedgerService {
           Number(totals.measured),
           Number(totals.claimed),
           Number(totals.certified),
-          project.values[4] || 0,
-          project.values[5] || 0
+          Number(totals.invoiced),
+          Number(totals.collected)
         ];
 
         return {
