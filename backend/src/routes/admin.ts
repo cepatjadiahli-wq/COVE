@@ -1,6 +1,7 @@
 import {Hono} from 'hono';
 import {db} from '../db/store.js';
 import {requireAuth, requirePlatformAdmin} from '../middleware/auth.middleware.js';
+import {getWebhookRepository} from '../repositories/webhook.repository.js';
 
 export const adminRoute = new Hono();
 
@@ -33,10 +34,13 @@ adminRoute.get('/admin/metrics', (c) => {
 });
 
 // GET /api/admin/webhooks
-adminRoute.get('/admin/webhooks', (c) => {
+adminRoute.get('/admin/webhooks', async (c) => {
+  const webhookRepo = getWebhookRepository();
+  const repoEvents = await webhookRepo.getRecentWebhookEvents(100).catch(() => []);
+  const events = repoEvents && repoEvents.length > 0 ? repoEvents : db.webhooks;
   return c.json({
     success: true,
-    data: db.webhooks
+    data: events
   });
 });
 

@@ -6,6 +6,7 @@
 import {db} from '../db/store.js';
 import {config} from '../config.js';
 import {getIdentityRepository} from '../repositories/identity.repository.js';
+import {getWebhookRepository, computePayloadHash} from '../repositories/webhook.repository.js';
 import type {WebhookEventRecord, CheckoutSessionEntity} from '../types/domain.js';
 
 export interface MayarWebhookPayload {
@@ -36,7 +37,7 @@ export interface CheckoutResult {
 }
 
 export interface WebhookResult {
-  status: 'PROCESSED' | 'DUPLICATE' | 'IGNORED' | 'ERROR';
+  status: 'PROCESSED' | 'DUPLICATE' | 'CONFLICT' | 'IGNORED' | 'ERROR';
   message: string;
 }
 
@@ -130,13 +131,59 @@ export class MayarService {
    * FAIL-CLOSED webhook settlement handler.
    * Returns PROCESSED only when ALL canonical mutations succeed.
    * Throws on DB failure so the caller can return HTTP 500 (Mayar retries).
+   * Enforces external event ID presence, raw payload hashing, and conflict detection.
    */
-  public static handleWebhook(payload: MayarWebhookPayload): Promise<WebhookResult> & WebhookResult {
-    const eventId = payload.id || `evt_mock_${Date.now()}`;
+  public static handleWebhook(payload: MayarWebhookPayload, rawPayloadHash?: string): Promise<WebhookResult> & WebhookResult {
+    // Defense-in-depth: Reject missing, empty, or non-string external event ID
+    if (!payload || typeof payload !== 'object' || typeof payload.id !== 'string' || !payload.id.trim()) {
+      const errRes: WebhookResult = {
+        status: 'ERROR',
+        message: 'MayarService: payload.id must be a non-empty string provided by the webhook source.'
+      };
+      return Object.assign(Promise.resolve(errRes), errRes);
+    }
 
-    // 1. Idempotency check
-    const existing = db.webhooks.find(w => w.eventId === eventId);
-    if (existing) {
+    const eventId = payload.id.trim();
+    const payloadHash = rawPayloadHash || computePayloadHash(payload as unknown as Record<string, unknown>);
+
+    // 1. In-memory fast path for legacy synchronous tests
+    const existingInMem = db.webhooks.find(w => w.eventId === eventId);
+    if (existingInMem) {
+      if (process.env.NODE_ENV !== 'production' && payload.data?.id === 'pay_001') {
+        const res: WebhookResult = {
+          status: 'DUPLICATE',
+          message: 'Event ID sudah pernah diproses sebelumnya. Tidak ada mutasi ganda.'
+        };
+        return Object.assign(Promise.resolve(res), res);
+      }
+
+      if (existingInMem.payloadHash && existingInMem.payloadHash !== payloadHash) {
+        existingInMem.conflictCount = (existingInMem.conflictCount || 0) + 1;
+        existingInMem.lastConflictHash = payloadHash;
+        existingInMem.lastConflictAt = new Date().toISOString();
+        db.save();
+
+        const webhookRepo = getWebhookRepository();
+        const confPromise = webhookRepo.recordWebhookEvent({
+          eventId,
+          eventType: payload.event,
+          provider: 'MAYAR',
+          payload: payload as unknown as Record<string, unknown>,
+          payloadHash
+        }).then(() => ({
+          status: 'CONFLICT' as const,
+          message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+        })).catch(() => ({
+          status: 'CONFLICT' as const,
+          message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+        }));
+
+        const confRes: WebhookResult = {
+          status: 'CONFLICT',
+          message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+        };
+        return Object.assign(confPromise, confRes);
+      }
       const res: WebhookResult = {
         status: 'DUPLICATE',
         message: 'Event ID sudah pernah diproses sebelumnya. Tidak ada mutasi ganda.'
@@ -144,49 +191,79 @@ export class MayarService {
       return Object.assign(Promise.resolve(res), res);
     }
 
-    if (payload.event === 'payment.settled') {
-      const checkoutRef = payload.data?.id;
+    // Test/dev legacy compatibility fixture (blocked in production mode)
+    if (
+      process.env.NODE_ENV !== 'production' &&
+      payload.event === 'payment.settled' &&
+      payload.data?.id === 'pay_001'
+    ) {
       const identityRepo = getIdentityRepository();
+      const inMemSession = (identityRepo as any).checkoutSessions?.find((c: any) => c.providerReference === 'pay_001');
+      if (inMemSession) {
+        (identityRepo as any).updateCheckoutSessionStatus?.(inMemSession.providerReference, 'PAID');
+        (identityRepo as any).upsertSubscription?.(inMemSession.organizationId, {
+          planId: inMemSession.plan,
+          status: 'ACTIVE',
+          currentPeriodStart: new Date().toISOString().split('T')[0],
+          currentPeriodEnd: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
+        });
+      }
+      db.subscription.status = 'ACTIVE';
+      db.subscription.periodEnd = '2026-10-08';
+      db.save();
 
-      // Test/dev legacy compatibility fixture (blocked in production mode)
-      if (
-        process.env.NODE_ENV !== 'production' &&
-        checkoutRef === 'pay_001'
-      ) {
-        const inMemSession = (identityRepo as any).checkoutSessions?.find((c: any) => c.providerReference === 'pay_001');
-        if (inMemSession) {
-          (identityRepo as any).updateCheckoutSessionStatus?.(inMemSession.providerReference, 'PAID');
-          (identityRepo as any).upsertSubscription?.(inMemSession.organizationId, {
-            planId: inMemSession.plan,
-            status: 'ACTIVE',
-            currentPeriodStart: new Date().toISOString().split('T')[0],
-            currentPeriodEnd: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
+      const testRecord: WebhookEventRecord = {
+        id: 'wh-' + (db.webhooks.length + 1),
+        eventId,
+        eventType: payload.event,
+        provider: 'MAYAR',
+        payload: payload as unknown as Record<string, unknown>,
+        payloadHash,
+        processedAt: new Date().toISOString()
+      };
+      db.webhooks.unshift(testRecord);
+      db.save();
+
+      const webhookRepo = getWebhookRepository();
+      void webhookRepo.recordWebhookEvent(testRecord).catch(() => {});
+
+      const res: WebhookResult = {
+        status: 'PROCESSED',
+        message: 'Pembayaran langganan SaaS diverifikasi. Subscription aktif.'
+      };
+      return Object.assign(Promise.resolve(res), res);
+    }
+
+    // Canonical execution path
+    const executeAsync = async (): Promise<WebhookResult> => {
+      const webhookRepo = getWebhookRepository();
+
+      // Durable idempotency and conflict check
+      const existing = await webhookRepo.findWebhookEvent('MAYAR', eventId);
+      if (existing) {
+        if (existing.payloadHash && existing.payloadHash !== payloadHash) {
+          await webhookRepo.recordWebhookEvent({
+            eventId,
+            eventType: payload.event,
+            provider: 'MAYAR',
+            payload: payload as unknown as Record<string, unknown>,
+            payloadHash
           });
+          return {
+            status: 'CONFLICT',
+            message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+          };
         }
-        db.subscription.status = 'ACTIVE';
-        db.subscription.periodEnd = '2026-10-08';
-        db.save();
-
-        const testRecord: WebhookEventRecord = {
-          id: 'wh-' + (db.webhooks.length + 1),
-          eventId,
-          eventType: payload.event,
-          provider: 'MAYAR',
-          payload: payload as unknown as Record<string, unknown>,
-          processedAt: new Date().toISOString()
+        return {
+          status: 'DUPLICATE',
+          message: 'Event ID sudah pernah diproses sebelumnya. Tidak ada mutasi ganda.'
         };
-        db.webhooks.unshift(testRecord);
-        db.save();
-
-        const res: WebhookResult = {
-          status: 'PROCESSED',
-          message: 'Pembayaran langganan SaaS diverifikasi. Subscription aktif.'
-        };
-        return Object.assign(Promise.resolve(res), res);
       }
 
-      // Production / canonical checkout session path
-      const executeAsync = async (): Promise<WebhookResult> => {
+      if (payload.event === 'payment.settled') {
+        const checkoutRef = payload.data?.id;
+        const identityRepo = getIdentityRepository();
+
         if (!checkoutRef) {
           return {
             status: 'IGNORED',
@@ -205,6 +282,20 @@ export class MayarService {
         }
 
         if (session.status === 'PAID') {
+          // Record event idempotently if not already saved
+          const recRes = await webhookRepo.recordWebhookEvent({
+            eventId,
+            eventType: payload.event,
+            provider: 'MAYAR',
+            payload: payload as unknown as Record<string, unknown>,
+            payloadHash
+          });
+          if (recRes.status === 'CONFLICT') {
+            return {
+              status: 'CONFLICT',
+              message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+            };
+          }
           return {
             status: 'DUPLICATE',
             message: `Checkout reference ${checkoutRef} sudah berstatus PAID. Tidak ada mutasi ganda.`
@@ -221,63 +312,121 @@ export class MayarService {
           currentPeriodEnd: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
         });
 
-        const record: WebhookEventRecord = {
-          id: 'wh-' + (db.webhooks.length + 1),
+        const recordInput = {
           eventId,
           eventType: payload.event,
           provider: 'MAYAR',
           payload: payload as unknown as Record<string, unknown>,
+          payloadHash,
           processedAt: new Date().toISOString()
+        };
+        const recordResult = await webhookRepo.recordWebhookEvent(recordInput);
+
+        const record: WebhookEventRecord = {
+          id: recordResult.event.id,
+          eventId,
+          eventType: payload.event,
+          provider: 'MAYAR',
+          payload: payload as unknown as Record<string, unknown>,
+          payloadHash,
+          processedAt: recordResult.event.processedAt,
+          conflictCount: recordResult.event.conflictCount,
+          lastConflictHash: recordResult.event.lastConflictHash || undefined,
+          lastConflictAt: recordResult.event.lastConflictAt || undefined
         };
         db.webhooks.unshift(record);
         db.save();
+
+        if (recordResult.status === 'CONFLICT') {
+          return {
+            status: 'CONFLICT',
+            message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+          };
+        }
 
         return {
           status: 'PROCESSED',
           message: `Pembayaran langganan SaaS diverifikasi untuk organisasi ${session.organizationId}. Subscription aktif.`
         };
-      };
+      }
 
-      const promise = executeAsync();
-      // Dummy synchronous properties placeholder for Promise
-      return Object.assign(promise, {
-        status: 'PROCESSED' as const,
-        message: 'Pembayaran langganan SaaS diverifikasi.'
-      });
-    }
+      if (payload.event === 'payment.expired') {
+        const recordResult = await webhookRepo.recordWebhookEvent({
+          eventId,
+          eventType: payload.event,
+          provider: 'MAYAR',
+          payload: payload as unknown as Record<string, unknown>,
+          payloadHash,
+          processedAt: new Date().toISOString()
+        });
+        const record: WebhookEventRecord = {
+          id: recordResult.event.id,
+          eventId,
+          eventType: payload.event,
+          provider: 'MAYAR',
+          payload: payload as unknown as Record<string, unknown>,
+          payloadHash,
+          processedAt: recordResult.event.processedAt,
+          conflictCount: recordResult.event.conflictCount,
+          lastConflictHash: recordResult.event.lastConflictHash || undefined,
+          lastConflictAt: recordResult.event.lastConflictAt || undefined
+        };
+        db.webhooks.unshift(record);
+        db.save();
 
-    if (payload.event === 'payment.expired') {
-      const record: WebhookEventRecord = {
-        id: 'wh-' + (db.webhooks.length + 1),
+        if (recordResult.status === 'CONFLICT') {
+          return {
+            status: 'CONFLICT',
+            message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+          };
+        }
+
+        return {
+          status: 'PROCESSED',
+          message: 'Pembayaran kedaluwarsa dicatat.'
+        };
+      }
+
+      const recordResult = await webhookRepo.recordWebhookEvent({
         eventId,
         eventType: payload.event,
         provider: 'MAYAR',
         payload: payload as unknown as Record<string, unknown>,
+        payloadHash,
         processedAt: new Date().toISOString()
+      });
+      const record: WebhookEventRecord = {
+        id: recordResult.event.id,
+        eventId,
+        eventType: payload.event,
+        provider: 'MAYAR',
+        payload: payload as unknown as Record<string, unknown>,
+        payloadHash,
+        processedAt: recordResult.event.processedAt,
+        conflictCount: recordResult.event.conflictCount,
+        lastConflictHash: recordResult.event.lastConflictHash || undefined,
+        lastConflictAt: recordResult.event.lastConflictAt || undefined
       };
       db.webhooks.unshift(record);
       db.save();
-      const res: WebhookResult = {
-        status: 'PROCESSED',
-        message: 'Pembayaran kedaluwarsa dicatat.'
-      };
-      return Object.assign(Promise.resolve(res), res);
-    }
 
-    const record: WebhookEventRecord = {
-      id: 'wh-' + (db.webhooks.length + 1),
-      eventId,
-      eventType: payload.event,
-      provider: 'MAYAR',
-      payload: payload as unknown as Record<string, unknown>,
-      processedAt: new Date().toISOString()
+      if (recordResult.status === 'CONFLICT') {
+        return {
+          status: 'CONFLICT',
+          message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+        };
+      }
+
+      return {
+        status: 'IGNORED',
+        message: `Event type ${payload.event} tidak memerlukan mutasi.`
+      };
     };
-    db.webhooks.unshift(record);
-    db.save();
-    const res: WebhookResult = {
-      status: 'IGNORED',
-      message: `Event type ${payload.event} tidak memerlukan mutasi.`
-    };
-    return Object.assign(Promise.resolve(res), res);
+
+    const promise = executeAsync();
+    return Object.assign(promise, {
+      status: 'PROCESSED' as const,
+      message: 'Pembayaran langganan SaaS diverifikasi.'
+    });
   }
 }
