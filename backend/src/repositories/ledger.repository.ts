@@ -284,11 +284,11 @@ export interface CanonicalCashReceiptCommand {
   receivedAmount: MoneyString;
   receivedAt: string;
   currency: string;
-  receiptNumber: string;
-  bankReference: string;
-  paymentMethod: string;
-  description: string;
-  notes: string;
+  receiptNumber: string | null;
+  bankReference: string | null;
+  paymentMethod: string | null;
+  description: string | null;
+  notes: string | null;
   allocations: Array<{
     invoiceId: string;
     amount: MoneyString;
@@ -320,9 +320,15 @@ export function canonicalizeCashReceiptCommand(input: {
     return String(d).trim().split('T')[0];
   };
 
+  const normStr = (s?: string | null): string | null => {
+    if (s === undefined || s === null) return null;
+    const trimmed = String(s).trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
   const normAllocations = (input.allocations || []).map(a => ({
     invoiceId: String(a.invoiceId || (a as any).projectInvoiceId || (a as any).project_invoice_id || '').trim(),
-    amount: parseMoney(a.amount ?? (a as any).allocatedAmount ?? (a as any).allocated_amount ?? 0)
+    amount: parseMoney(a.amount ?? (a as any).allocatedAmount ?? (a as any).allocated_amount ?? '0.00')
   })).sort((a, b) => {
     const cmp = a.invoiceId.localeCompare(b.invoiceId);
     if (cmp !== 0) return cmp;
@@ -334,11 +340,11 @@ export function canonicalizeCashReceiptCommand(input: {
     receivedAmount: parseMoney(input.receivedAmount),
     receivedAt: normDate(input.receivedAt),
     currency: (input.currency || 'IDR').trim().toUpperCase(),
-    receiptNumber: (input.receiptNumber || '').trim(),
-    bankReference: (input.bankReference || 'BANK-RCPT-AUTO').trim(),
-    paymentMethod: (input.paymentMethod || 'BANK_TRANSFER').trim().toUpperCase(),
-    description: (input.description || '').trim(),
-    notes: (input.notes || '').trim(),
+    receiptNumber: normStr(input.receiptNumber),
+    bankReference: normStr(input.bankReference) ?? 'BANK-RCPT-AUTO',
+    paymentMethod: normStr(input.paymentMethod)?.toUpperCase() ?? 'BANK_TRANSFER',
+    description: normStr(input.description),
+    notes: normStr(input.notes),
     allocations: normAllocations
   };
 }

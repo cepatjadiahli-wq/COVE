@@ -26,7 +26,9 @@ import {
 import {
   PostgresLedgerRepository,
   setLedgerRepository,
-  getLedgerRepository
+  getLedgerRepository,
+  canonicalizeCashReceiptCommand,
+  isSameCashReceiptCommand
 } from '../src/repositories/ledger.repository.js';
 import {CANONICAL_MIGRATION_ORDER} from '../src/db/migrate.js';
 
@@ -1363,3 +1365,304 @@ test('P0B3I-18: tenant scoping remains independent', async () => {
   assert.strictEqual(rTenantA.orgId, ORG_A_ID);
   assert.strictEqual(rTenantB.orgId, ORG_B_ID);
 });
+
+// ============================================================================
+// P0-B3.4: Exact-Money Safe Idempotency Fingerprint Tests (P0B3X-01 .. P0B3X-05)
+// ============================================================================
+
+test('P0B3X-01: Critical precision test (900719925474099.91 vs 900719925474099.92 conflicts with 409)', async () => {
+  // First verify unit-level canonical command comparison
+  const cmdA = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: '900719925474099.91',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '900719925474099.91' }]
+  });
+  const cmdB = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: '900719925474099.92',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '900719925474099.92' }]
+  });
+  assert.strictEqual(typeof cmdA.receivedAmount, 'string');
+  assert.strictEqual(typeof cmdB.receivedAmount, 'string');
+  assert.strictEqual(cmdA.receivedAmount, '900719925474099.91');
+  assert.strictEqual(cmdB.receivedAmount, '900719925474099.92');
+  assert.strictEqual(isSameCashReceiptCommand(cmdA, cmdB), false, 'High-precision amounts must not collapse into identical command');
+
+  // Next verify database level execution
+  const highVal = '900719925474099.92';
+  const highWpl = await pgLedgerRepo.createWorkProgressLine({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    description: 'P0B3X-01 High Value WPL',
+    principalAmount: highVal
+  });
+  const highMeas = await pgLedgerRepo.createMeasurement({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    measurementNumber: 'OPN-P0B3X-01',
+    allocations: [{ workProgressLineId: highWpl.id, amount: highVal }]
+  });
+  const highClaim = await pgLedgerRepo.createClaim({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    claimNumber: 'CLM-P0B3X-01',
+    allocations: [{ measurementId: highMeas.id, amount: highVal }]
+  });
+  const highCert = await pgLedgerRepo.createCertificate({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    certificateNumber: 'BAP-P0B3X-01',
+    allocations: [{ claimId: highClaim.id, amount: highVal }]
+  });
+  const highInv = await pgLedgerRepo.createProjectInvoice({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    invoiceNumber: 'INV-P0B3X-01',
+    allocations: [{ certificateId: highCert.id, amount: highVal }]
+  });
+
+  const KEY = 'P0B3X-KEY-01';
+  const first = await pgLedgerRepo.createCashReceipt({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: '900719925474099.91',
+    allocations: [{ invoiceId: highInv.id, amount: '900719925474099.91' }]
+  });
+  assert.strictEqual(first.receivedAmount, '900719925474099.91');
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        orgId: ORG_A_ID,
+        projectId: PROJ_A_1,
+        idempotencyKey: KEY,
+        receivedAmount: '900719925474099.92',
+        allocations: [{ invoiceId: highInv.id, amount: '900719925474099.92' }]
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3X-02: Max-range precision test (9999999999999999.98 vs 9999999999999999.99 conflicts with 409)', async () => {
+  const maxA = '9999999999999999.98';
+  const maxB = '9999999999999999.99';
+
+  const cmdA = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: maxA,
+    allocations: [{ invoiceId: baseInvoiceAId, amount: maxA }]
+  });
+  const cmdB = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: maxB,
+    allocations: [{ invoiceId: baseInvoiceAId, amount: maxB }]
+  });
+  assert.strictEqual(cmdA.receivedAmount, maxA);
+  assert.strictEqual(cmdB.receivedAmount, maxB);
+  assert.strictEqual(isSameCashReceiptCommand(cmdA, cmdB), false, 'Max numeric range amounts must not collapse');
+
+  // Database mutation test
+  const maxWpl = await pgLedgerRepo.createWorkProgressLine({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    description: 'P0B3X-02 Max Numeric WPL',
+    principalAmount: maxB
+  });
+  const maxMeas = await pgLedgerRepo.createMeasurement({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    measurementNumber: 'OPN-P0B3X-02',
+    allocations: [{ workProgressLineId: maxWpl.id, amount: maxB }]
+  });
+  const maxClaim = await pgLedgerRepo.createClaim({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    claimNumber: 'CLM-P0B3X-02',
+    allocations: [{ measurementId: maxMeas.id, amount: maxB }]
+  });
+  const maxCert = await pgLedgerRepo.createCertificate({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    certificateNumber: 'BAP-P0B3X-02',
+    allocations: [{ claimId: maxClaim.id, amount: maxB }]
+  });
+  const maxInv = await pgLedgerRepo.createProjectInvoice({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    invoiceNumber: 'INV-P0B3X-02',
+    allocations: [{ certificateId: maxCert.id, amount: maxB }]
+  });
+
+  const KEY = 'P0B3X-KEY-02';
+  const first = await pgLedgerRepo.createCashReceipt({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: maxA,
+    allocations: [{ invoiceId: maxInv.id, amount: maxA }]
+  });
+  assert.strictEqual(first.receivedAmount, maxA);
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        orgId: ORG_A_ID,
+        projectId: PROJ_A_1,
+        idempotencyKey: KEY,
+        receivedAmount: maxB,
+        allocations: [{ invoiceId: maxInv.id, amount: maxB }]
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3X-03: Allocation precision test (same received amount, original 900719925474099.91 vs retry 900719925474099.92 conflicts with 409)', async () => {
+  const allocA = '900719925474099.91';
+  const allocB = '900719925474099.92';
+  const totalAmount = '900719925474099.92';
+
+  const cmdA = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: totalAmount,
+    allocations: [{ invoiceId: baseInvoiceAId, amount: allocA }]
+  });
+  const cmdB = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: totalAmount,
+    allocations: [{ invoiceId: baseInvoiceAId, amount: allocB }]
+  });
+  assert.strictEqual(isSameCashReceiptCommand(cmdA, cmdB), false);
+
+  const wpl = await pgLedgerRepo.createWorkProgressLine({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    description: 'P0B3X-03 Alloc Precision WPL',
+    principalAmount: totalAmount
+  });
+  const meas = await pgLedgerRepo.createMeasurement({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    measurementNumber: 'OPN-P0B3X-03',
+    allocations: [{ workProgressLineId: wpl.id, amount: totalAmount }]
+  });
+  const claim = await pgLedgerRepo.createClaim({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    claimNumber: 'CLM-P0B3X-03',
+    allocations: [{ measurementId: meas.id, amount: totalAmount }]
+  });
+  const cert = await pgLedgerRepo.createCertificate({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    certificateNumber: 'BAP-P0B3X-03',
+    allocations: [{ claimId: claim.id, amount: totalAmount }]
+  });
+  const inv = await pgLedgerRepo.createProjectInvoice({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    invoiceNumber: 'INV-P0B3X-03',
+    allocations: [{ certificateId: cert.id, amount: totalAmount }]
+  });
+
+  const KEY = 'P0B3X-KEY-03';
+  await pgLedgerRepo.createCashReceipt({
+    orgId: ORG_A_ID,
+    projectId: PROJ_A_1,
+    idempotencyKey: KEY,
+    receivedAmount: totalAmount,
+    allocations: [{ invoiceId: inv.id, amount: allocA }]
+  });
+
+  await assert.rejects(
+    async () => {
+      await pgLedgerRepo.createCashReceipt({
+        orgId: ORG_A_ID,
+        projectId: PROJ_A_1,
+        idempotencyKey: KEY,
+        receivedAmount: totalAmount,
+        allocations: [{ invoiceId: inv.id, amount: allocB }]
+      });
+    },
+    (err: any) => {
+      assert.strictEqual(err.statusCode, 409);
+      assert.ok(err.message.includes('RECEIPT_IDEMPOTENCY_CONFLICT'));
+      return true;
+    }
+  );
+});
+
+test('P0B3X-04: Small decimal exact test ("0.10", "0.20", "0.30" exact distinctions without binary float error)', async () => {
+  const cmd10 = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: '0.10',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '0.10' }]
+  });
+  const cmd20 = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: '0.20',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '0.20' }]
+  });
+  const cmd30 = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: '0.30',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '0.30' }]
+  });
+
+  assert.strictEqual(cmd10.receivedAmount, '0.10');
+  assert.strictEqual(cmd20.receivedAmount, '0.20');
+  assert.strictEqual(cmd30.receivedAmount, '0.30');
+
+  assert.strictEqual(isSameCashReceiptCommand(cmd10, cmd20), false);
+  assert.strictEqual(isSameCashReceiptCommand(cmd20, cmd30), false);
+  assert.strictEqual(isSameCashReceiptCommand(cmd10, cmd30), false);
+
+  // Replay of identical small decimal matches exactly
+  const cmd10Replay = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: '0.10',
+    allocations: [{ invoiceId: baseInvoiceAId, amount: '0.10' }]
+  });
+  assert.strictEqual(isSameCashReceiptCommand(cmd10, cmd10Replay), true);
+});
+
+test('P0B3X-05: Exact-Money types and deterministic multiset sorting without Number conversion', async () => {
+  const unsortedAllocations = [
+    { invoiceId: 'INV-2', amount: '200.00' },
+    { invoiceId: 'INV-1', amount: '500.00' },
+    { invoiceId: 'INV-1', amount: '100.00' },
+    { invoiceId: 'INV-2', amount: '50.00' }
+  ];
+
+  const cmd = canonicalizeCashReceiptCommand({
+    projectId: PROJ_A_1,
+    receivedAmount: '850.00',
+    allocations: unsortedAllocations
+  });
+
+  // Verify all amounts are strictly string MoneyString
+  assert.strictEqual(typeof cmd.receivedAmount, 'string');
+  for (const a of cmd.allocations) {
+    assert.strictEqual(typeof a.amount, 'string');
+    assert.strictEqual(typeof a.invoiceId, 'string');
+  }
+
+  // Sorted order: (INV-1, 100.00), (INV-1, 500.00), (INV-2, 50.00), (INV-2, 200.00)
+  assert.deepStrictEqual(cmd.allocations, [
+    { invoiceId: 'INV-1', amount: '100.00' },
+    { invoiceId: 'INV-1', amount: '500.00' },
+    { invoiceId: 'INV-2', amount: '50.00' },
+    { invoiceId: 'INV-2', amount: '200.00' }
+  ]);
+});
+
