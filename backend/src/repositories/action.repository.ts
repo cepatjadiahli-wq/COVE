@@ -79,14 +79,54 @@ function formatNoteString(createdAt: string | Date, author: string, note: string
   return `${day} ${monthStr} · ${author}: ${note}`;
 }
 
-export class PostgresActionRepository implements IActionRepository {
-  private pool: any;
+export interface ActionNoteRow {
+  id: string;
+  action_item_id: string;
+  author_name: string;
+  note: string;
+  created_at: string | Date;
+}
 
-  constructor(pool?: any) {
-    this.pool = pool || pgPool;
+export interface ActionItemRow {
+  id: string;
+  org_id: string;
+  project_id: string;
+  owner_name: string;
+  title: string;
+  blocker: string;
+  value_at_risk: string | number;
+  due_at: string | Date;
+  severity: 'Rendah' | 'Sedang' | 'Tinggi';
+  status: 'Terbuka' | 'Menunggu' | 'Selesai';
+  created_at: string | Date;
+  updated_at: string | Date;
+  completed_at: string | Date | null;
+  notes_json?: Array<{
+    id: string;
+    author: string;
+    note: string;
+    createdAt: string;
+  }>;
+}
+
+export interface QueryableActionClient {
+  query: (sql: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number | null }>;
+  release: () => void;
+}
+
+export interface QueryableActionPool {
+  query: (sql: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number | null }>;
+  connect?: () => Promise<QueryableActionClient>;
+}
+
+export class PostgresActionRepository implements IActionRepository {
+  private pool: QueryableActionPool;
+
+  constructor(pool: QueryableActionPool = pgPool) {
+    this.pool = pool;
   }
 
-  private async getClient(): Promise<{ query: (sql: string, params?: any[]) => Promise<any>; release: () => void }> {
+  private async getClient(): Promise<QueryableActionClient> {
     if (this.pool && typeof this.pool.connect === 'function') {
       return await this.pool.connect();
     }
@@ -96,14 +136,14 @@ export class PostgresActionRepository implements IActionRepository {
     };
   }
 
-  private mapRowToActionRecord(row: any, rawNotes?: any[]): ActionRecord {
+  private mapRowToActionRecord(row: ActionItemRow, rawNotes?: ActionNoteRow[]): ActionRecord {
     const dueStr = row.due_at instanceof Date ? row.due_at.toISOString().split('T')[0] : String(row.due_at).split('T')[0];
     
     let formattedNotes: string[] = [];
     if (Array.isArray(rawNotes)) {
-      formattedNotes = rawNotes.map(n => formatNoteString(n.createdAt || n.created_at, n.author || n.author_name, n.note));
+      formattedNotes = rawNotes.map(n => formatNoteString(n.created_at, n.author_name, n.note));
     } else if (Array.isArray(row.notes_json)) {
-      formattedNotes = row.notes_json.map((n: any) => formatNoteString(n.createdAt, n.author, n.note));
+      formattedNotes = row.notes_json.map((n) => formatNoteString(n.createdAt, n.author, n.note));
     }
 
     return {
@@ -163,7 +203,8 @@ export class PostgresActionRepository implements IActionRepository {
       [input.orgId, input.projectId, owner, input.title.trim(), input.blocker.trim(), value, due, severity]
     );
 
-    return this.mapRowToActionRecord(res.rows[0], []);
+    const rows = res.rows as ActionItemRow[];
+    return this.mapRowToActionRecord(rows[0], []);
   }
 
   public async getActions(orgId: string, filter?: { projectId?: string; status?: string }): Promise<ActionRecord[]> {
@@ -198,7 +239,8 @@ export class PostgresActionRepository implements IActionRepository {
     sql += ` GROUP BY ai.id ORDER BY ai.created_at DESC`;
 
     const res = await this.pool.query(sql, params);
-    return res.rows.map(r => this.mapRowToActionRecord(r));
+    const rows = res.rows as ActionItemRow[];
+    return rows.map((r: ActionItemRow) => this.mapRowToActionRecord(r));
   }
 
   public async getActionById(orgId: string, id: string): Promise<ActionRecord | null> {
@@ -222,8 +264,9 @@ export class PostgresActionRepository implements IActionRepository {
       [id, orgId]
     );
 
-    if (res.rows.length === 0) return null;
-    return this.mapRowToActionRecord(res.rows[0]);
+    const rows = res.rows as ActionItemRow[];
+    if (rows.length === 0) return null;
+    return this.mapRowToActionRecord(rows[0]);
   }
 
   public async updateAction(orgId: string, id: string, input: UpdateActionInput): Promise<ActionRecord | null> {
