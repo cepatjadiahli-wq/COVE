@@ -207,6 +207,34 @@ export interface CheckoutSessionEntity {
   updatedAt?: string;
 }
 
+export interface BillingPaymentEntity {
+  id: string;
+  organizationId: string;
+  checkoutSessionId?: string | null;
+  provider: string;
+  providerPaymentId: string;
+  providerEventId?: string | null;
+  amount: number | string;
+  currency: string;
+  status: 'PENDING' | 'SETTLED' | 'FAILED' | 'REFUNDED' | 'OVERPAYMENT_REVIEW';
+  paidAt: string;
+  createdAt: string;
+}
+
+export interface BillingPaymentAnomalyEntity {
+  id: string;
+  provider: string;
+  providerPaymentId: string;
+  existingPaymentId?: string | null;
+  providerEventId?: string | null;
+  conflictType: string;
+  incomingAmount: number | string;
+  incomingCurrency: string;
+  incomingCheckoutReference?: string | null;
+  details?: Record<string, any>;
+  createdAt: string;
+}
+
 export interface SubscriptionEntity {
   id: string;
   planId: string;

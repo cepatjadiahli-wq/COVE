@@ -7,6 +7,7 @@ import {db} from '../db/store.js';
 import {config} from '../config.js';
 import {getIdentityRepository} from '../repositories/identity.repository.js';
 import {getWebhookRepository, computePayloadHash} from '../repositories/webhook.repository.js';
+import {getBillingSettlementRepository} from '../repositories/billing_settlement.repository.js';
 import type {WebhookEventRecord, CheckoutSessionEntity} from '../types/domain.js';
 
 export interface MayarWebhookPayload {
@@ -18,7 +19,11 @@ export interface MayarWebhookPayload {
     customer_name?: string;
     status: string;
     plan_id?: string;
+    payment_id?: string;
+    transaction_id?: string;
+    currency?: string;
   };
+  failureInjectionStep?: 'after_payment_insert' | 'after_checkout_update' | 'during_subscription';
 }
 
 export interface CheckoutResult {
@@ -261,8 +266,7 @@ export class MayarService {
       }
 
       if (payload.event === 'payment.settled') {
-        const checkoutRef = payload.data?.id;
-        const identityRepo = getIdentityRepository();
+        const checkoutRef = payload.data?.id || (payload.data as any)?.checkout_id || (payload.data as any)?.checkout_reference;
 
         if (!checkoutRef) {
           return {
@@ -271,18 +275,42 @@ export class MayarService {
           };
         }
 
-        // Fetch checkout session — throws on DB error (HTTP 500 → Mayar retries)
-        const session = await identityRepo.getCheckoutSessionByReference(checkoutRef);
+        const billingSettlementRepo = getBillingSettlementRepository();
+        const providerPaymentId = (payload.data as any)?.payment_id || (payload.data as any)?.transaction_id || payload.data?.id;
 
-        if (!session) {
+        const settlementResult = await billingSettlementRepo.settlePayment({
+          provider: 'MAYAR',
+          checkoutReference: checkoutRef,
+          providerPaymentId: providerPaymentId || '',
+          providerEventId: eventId,
+          amount: payload.data?.amount,
+          currency: (payload.data as any)?.currency || 'IDR',
+          paymentStatus: payload.data?.status,
+          failureInjectionStep: payload.failureInjectionStep
+        });
+
+        if (settlementResult.status === 'IGNORED') {
           return {
             status: 'IGNORED',
-            message: `Checkout reference ${checkoutRef} tidak terdaftar pada organisasi manapun. Settlement diabaikan.`
+            message: settlementResult.message
           };
         }
 
-        if (session.status === 'PAID') {
-          // Record event idempotently if not already saved
+        if (settlementResult.status === 'REJECTED') {
+          return {
+            status: 'ERROR',
+            message: settlementResult.message
+          };
+        }
+
+        if (settlementResult.status === 'PAYMENT_CONFLICT') {
+          return {
+            status: 'CONFLICT',
+            message: settlementResult.message
+          };
+        }
+
+        if (settlementResult.status === 'DUPLICATE') {
           const recRes = await webhookRepo.recordWebhookEvent({
             eventId,
             eventType: payload.event,
@@ -298,29 +326,19 @@ export class MayarService {
           }
           return {
             status: 'DUPLICATE',
-            message: `Checkout reference ${checkoutRef} sudah berstatus PAID. Tidak ada mutasi ganda.`
+            message: settlementResult.message
           };
         }
 
-        // ATOMIC SETTLEMENT — any step throws on failure, propagated to HTTP 500
-        await identityRepo.updateCheckoutSessionStatus(session.providerReference, 'PAID');
-
-        await identityRepo.upsertSubscription(session.organizationId, {
-          planId: session.plan || 'core',
-          status: 'ACTIVE',
-          currentPeriodStart: new Date().toISOString().split('T')[0],
-          currentPeriodEnd: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
-        });
-
-        const recordInput = {
+        // Settlement successful (PROCESSED)
+        const recordResult = await webhookRepo.recordWebhookEvent({
           eventId,
           eventType: payload.event,
           provider: 'MAYAR',
           payload: payload as unknown as Record<string, unknown>,
           payloadHash,
           processedAt: new Date().toISOString()
-        };
-        const recordResult = await webhookRepo.recordWebhookEvent(recordInput);
+        });
 
         const record: WebhookEventRecord = {
           id: recordResult.event.id,
@@ -335,6 +353,10 @@ export class MayarService {
           lastConflictAt: recordResult.event.lastConflictAt || undefined
         };
         db.webhooks.unshift(record);
+        db.subscription.status = 'ACTIVE';
+        if (settlementResult.newPeriodEnd) {
+          db.subscription.periodEnd = settlementResult.newPeriodEnd;
+        }
         db.save();
 
         if (recordResult.status === 'CONFLICT') {
@@ -346,7 +368,7 @@ export class MayarService {
 
         return {
           status: 'PROCESSED',
-          message: `Pembayaran langganan SaaS diverifikasi untuk organisasi ${session.organizationId}. Subscription aktif.`
+          message: settlementResult.message
         };
       }
 
