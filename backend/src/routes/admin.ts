@@ -2,6 +2,8 @@ import {Hono} from 'hono';
 import {db} from '../db/store.js';
 import {requireAuth, requirePlatformAdmin} from '../middleware/auth.middleware.js';
 import {getWebhookRepository} from '../repositories/webhook.repository.js';
+import {ReplayService} from '../services/replay.service.js';
+import {ReconciliationService} from '../services/reconciliation.service.js';
 
 export const adminRoute = new Hono();
 
@@ -104,3 +106,153 @@ adminRoute.patch('/admin/features/:id', async (c) => {
 
   return c.json({success: true, data: feature});
 });
+
+// ============================================================================
+// P0-C3: Webhook Replay & Reconciliation Endpoints (Admin-Only)
+// ============================================================================
+
+// POST /api/admin/webhooks/:eventId/replay
+adminRoute.post('/admin/webhooks/:eventId/replay', async (c) => {
+  const eventId = c.req.param('eventId');
+  const actor = c.get('actor');
+
+  const result = await ReplayService.replayWebhookEvent(eventId, actor?.authUserId || null);
+
+  if (result.status === 'NOT_FOUND') {
+    return c.json({
+      success: false,
+      status: result.status,
+      error: result.message
+    }, 404);
+  }
+
+  if (result.status === 'CONCURRENCY_BLOCKED') {
+    return c.json({
+      success: false,
+      status: result.status,
+      error: result.message,
+      attemptId: result.attemptId
+    }, 409);
+  }
+
+  if (result.status === 'FAILED') {
+    return c.json({
+      success: false,
+      status: result.status,
+      error: result.message,
+      attemptId: result.attemptId
+    }, 400);
+  }
+
+  return c.json({
+    success: true,
+    status: result.status,
+    message: result.message,
+    attemptId: result.attemptId,
+    paymentId: result.paymentId,
+    newPeriodEnd: result.newPeriodEnd
+  });
+});
+
+// GET /api/admin/reconciliation/unresolved
+adminRoute.get('/admin/reconciliation/unresolved', async (c) => {
+  const limitQuery = c.req.query('limit');
+  const limit = limitQuery ? parseInt(limitQuery, 10) : 50;
+  const events = await ReconciliationService.listUnresolvedEvents(limit);
+  
+  // Minimize data exposure: omit raw payload JSONB
+  const sanitized = events.map(e => ({
+    id: e.id,
+    eventId: e.eventId,
+    provider: e.provider,
+    eventType: e.eventType,
+    processingStatus: e.processingStatus,
+    attemptCount: e.attemptCount,
+    lastAttemptAt: e.lastAttemptAt,
+    lastErrorCode: e.lastErrorCode,
+    lastErrorMessage: e.lastErrorMessage,
+    conflictCount: e.conflictCount,
+    processedAt: e.processedAt
+  }));
+
+  return c.json({
+    success: true,
+    data: sanitized
+  });
+});
+
+// GET /api/admin/reconciliation/overpayments
+adminRoute.get('/admin/reconciliation/overpayments', async (c) => {
+  const limitQuery = c.req.query('limit');
+  const limit = limitQuery ? parseInt(limitQuery, 10) : 50;
+  const payments = await ReconciliationService.listOverpaymentReviews(limit);
+  return c.json({
+    success: true,
+    data: payments
+  });
+});
+
+// GET /api/admin/reconciliation/conflicts
+adminRoute.get('/admin/reconciliation/conflicts', async (c) => {
+  const limitQuery = c.req.query('limit');
+  const limit = limitQuery ? parseInt(limitQuery, 10) : 50;
+  const anomalies = await ReconciliationService.listPaymentConflicts(limit);
+  return c.json({
+    success: true,
+    data: anomalies
+  });
+});
+
+// GET /api/admin/reconciliation/items
+adminRoute.get('/admin/reconciliation/items', async (c) => {
+  const status = c.req.query('status');
+  const limitQuery = c.req.query('limit');
+  const limit = limitQuery ? parseInt(limitQuery, 10) : 50;
+  const items = await ReconciliationService.listReconciliationItems(status, limit);
+  return c.json({
+    success: true,
+    data: items
+  });
+});
+
+// PATCH /api/admin/reconciliation/items/:itemId
+adminRoute.patch('/admin/reconciliation/items/:itemId', async (c) => {
+  const itemId = c.req.param('itemId');
+  const actor = c.get('actor');
+  const body = await c.req.json().catch(() => ({}));
+
+  const { resolution, reason } = body;
+  if (!resolution || (resolution !== 'RESOLVED' && resolution !== 'IGNORED_WITH_REASON')) {
+    return c.json({
+      success: false,
+      error: 'Status resolusi tidak valid. Pilihan: RESOLVED, IGNORED_WITH_REASON.'
+    }, 400);
+  }
+
+  if (!reason || !reason.trim()) {
+    return c.json({
+      success: false,
+      error: 'Alasan resolusi wajib diisi.'
+    }, 400);
+  }
+
+  const success = await ReconciliationService.resolveItem(
+    itemId,
+    actor?.authUserId || 'admin',
+    resolution,
+    reason.trim()
+  );
+
+  if (!success) {
+    return c.json({
+      success: false,
+      error: 'Reconciliation item tidak ditemukan atau sudah tidak berstatus OPEN.'
+    }, 404);
+  }
+
+  return c.json({
+    success: true,
+    message: `Reconciliation item ${itemId} berhasil diperbarui menjadi ${resolution}.`
+  });
+});
+

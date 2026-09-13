@@ -247,6 +247,14 @@ export interface SubscriptionEntity {
   amount: number;
 }
 
+export type WebhookProcessingStatus =
+  | 'RECEIVED'
+  | 'PROCESSING'
+  | 'PROCESSED'
+  | 'RETRYABLE'
+  | 'REVIEW_REQUIRED'
+  | 'FAILED_FINAL';
+
 export interface WebhookEventRecord {
   id: string;
   eventId: string;
@@ -258,6 +266,61 @@ export interface WebhookEventRecord {
   conflictCount?: number;
   lastConflictHash?: string;
   lastConflictAt?: string;
+  processingStatus?: WebhookProcessingStatus;
+  attemptCount?: number;
+  processingStartedAt?: string | null;
+  lastAttemptAt?: string | null;
+  lastErrorCode?: string | null;
+  lastErrorMessage?: string | null;
+}
+
+export type ReplayResultStatus =
+  | 'REPLAYED'
+  | 'ALREADY_PROCESSED'
+  | 'REVIEW_REQUIRED'
+  | 'FAILED'
+  | 'NOT_FOUND'
+  | 'CONCURRENCY_BLOCKED';
+
+export interface WebhookReplayAttemptEntity {
+  id: string;
+  webhookEventId: string;
+  initiatedByAdminId?: string | null;
+  attemptedAt: string;
+  resultStatus: ReplayResultStatus;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  durationMs?: number | null;
+  createdAt: string;
+}
+
+export type ReconciliationItemType =
+  | 'UNRESOLVED_WEBHOOK'
+  | 'OVERPAYMENT_REVIEW'
+  | 'PAYMENT_CONFLICT'
+  | 'CHECKOUT_WITHOUT_PAYMENT'
+  | 'PAYMENT_WITHOUT_SUBSCRIPTION';
+
+export type ReconciliationItemStatus =
+  | 'OPEN'
+  | 'RESOLVED'
+  | 'IGNORED_WITH_REASON';
+
+export interface ReconciliationItemEntity {
+  id: string;
+  itemType: ReconciliationItemType;
+  status: ReconciliationItemStatus;
+  webhookEventId?: string | null;
+  billingPaymentId?: string | null;
+  checkoutSessionId?: string | null;
+  organizationId?: string | null;
+  anomalyId?: string | null;
+  details?: Record<string, unknown>;
+  resolutionReason?: string | null;
+  resolvedByAdminId?: string | null;
+  resolvedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface StageMetricsResult {
