@@ -733,17 +733,23 @@ test('AUTH-27: Checkout contains no synthetic checkout URL generator', () => {
 test('AUTH-28: Provider unavailable returns explicit PAYMENT_PROVIDER_NOT_CONFIGURED', async () => {
   // 1. Without configuration and without mock override -> returns 503
   setCheckoutClientOverride(null);
-  const resUnavailable = await app.request('/api/billing/checkout', {
-    method: 'POST',
-    headers: {
-      Authorization: 'Bearer token-owner',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ planId: 'core' })
-  });
-  assert.strictEqual(resUnavailable.status, 503);
-  const bodyUnavailable = await resUnavailable.json();
-  assert.strictEqual(bodyUnavailable.error, 'PAYMENT_PROVIDER_NOT_CONFIGURED');
+  const origKey = config.mayarApiKey;
+  config.mayarApiKey = '';
+  try {
+    const resUnavailable = await app.request('/api/billing/checkout', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer token-owner',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ planId: 'core' })
+    });
+    assert.strictEqual(resUnavailable.status, 503);
+    const bodyUnavailable = await resUnavailable.json();
+    assert.strictEqual(bodyUnavailable.error, 'PAYMENT_PROVIDER_NOT_CONFIGURED');
+  } finally {
+    config.mayarApiKey = origKey;
+  }
 
   // 2. With mock provider configured -> returns 200 with checkout URL
   setCheckoutClientOverride(async (params) => {
