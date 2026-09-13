@@ -65,7 +65,7 @@ billingRoute.get('/billing', async (c) => {
         quotaTotal,
         periodStart: sub.currentPeriodStart || '2026-09-08',
         periodEnd: sub.currentPeriodEnd || '2026-10-08',
-        amount: (sub.plan || sub.planId) === 'scale' ? 9900000 : (sub.plan || sub.planId) === 'pilot' ? 7500000 : 4900000
+        amount: (sub.plan || sub.planId) === 'enterprise' ? 25000000 : (sub.plan || sub.planId) === 'scale' ? 9900000 : (sub.plan || sub.planId) === 'pilot' ? 7500000 : 4900000
       } : {
         id: '',
         planId: 'free',
@@ -87,6 +87,8 @@ billingRoute.get('/billing', async (c) => {
   });
 });
 
+const ALLOWED_CHECKOUT_PLANS = ['core', 'pilot', 'scale'] as const;
+
 // POST /api/billing/checkout
 // Calls real provider checkout; binds session to actor.orgId; records in checkout_sessions
 billingRoute.post('/billing/checkout', async (c) => {
@@ -102,7 +104,18 @@ billingRoute.post('/billing/checkout', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
-  const planId = body.planId || 'core';
+  const rawPlanId = body.planId;
+  const planId = (rawPlanId !== undefined && rawPlanId !== null && String(rawPlanId).trim() !== '')
+    ? String(rawPlanId).toLowerCase().trim()
+    : 'core';
+
+  if (!ALLOWED_CHECKOUT_PLANS.includes(planId as any)) {
+    return c.json({
+      success: false,
+      code: 'INVALID_BILLING_PLAN',
+      error: `Paket langganan '${rawPlanId}' tidak valid atau tidak tersedia untuk self-service checkout.`
+    }, 400);
+  }
 
   const checkoutRes = await MayarService.createCheckoutSession({
     planId,
@@ -116,6 +129,7 @@ billingRoute.post('/billing/checkout', async (c) => {
     return c.json({
       success: false,
       error: checkoutRes.error,
+      code: checkoutRes.error,
       message: checkoutRes.message
     }, httpStatus);
   }

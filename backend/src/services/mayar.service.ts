@@ -69,8 +69,21 @@ export class MayarService {
     customerEmail: string;
     organizationId?: string;
   }): Promise<CheckoutResult> {
+    const ALLOWED_PLANS = ['core', 'pilot', 'scale'] as const;
+    const normalizedPlan = (params.planId || '').toLowerCase().trim();
+    if (!ALLOWED_PLANS.includes(normalizedPlan as any)) {
+      return {
+        success: false,
+        error: 'INVALID_BILLING_PLAN',
+        message: `Paket '${params.planId}' tidak valid untuk pembuatan sesi checkout online.`
+      };
+    }
+
     if (checkoutClientOverride) {
-      return checkoutClientOverride(params);
+      return checkoutClientOverride({
+        ...params,
+        planId: normalizedPlan
+      });
     }
 
     if (!config.mayarApiKey || config.mayarApiKey === 'myr_dev_key_unconfigured' || config.mayarApiKey.startsWith('myr_test_')) {
@@ -81,7 +94,20 @@ export class MayarService {
       };
     }
 
-    const amount = params.planId === 'pilot' ? 7500000 : params.planId === 'scale' ? 9900000 : 4900000;
+    let amount: number;
+    if (normalizedPlan === 'pilot') {
+      amount = 7500000;
+    } else if (normalizedPlan === 'scale') {
+      amount = 9900000;
+    } else if (normalizedPlan === 'core') {
+      amount = 4900000;
+    } else {
+      return {
+        success: false,
+        error: 'INVALID_BILLING_PLAN',
+        message: `Paket '${params.planId}' tidak valid untuk pembuatan sesi checkout online.`
+      };
+    }
     const tax = Math.round(amount * 0.11);
     const total = amount + tax;
 
@@ -94,10 +120,10 @@ export class MayarService {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          name: `COVE Subscription - Paket ${params.planId.toUpperCase()}`,
+          name: `COVE Subscription - Paket ${normalizedPlan.toUpperCase()}`,
           email: params.customerEmail,
           amount: total,
-          description: `Langganan platform COVE paket ${params.planId}`
+          description: `Langganan platform COVE paket ${normalizedPlan}`
         })
       });
 
@@ -115,7 +141,7 @@ export class MayarService {
         success: true,
         data: {
           checkoutRef: result.data?.id || result.id,
-          planId: params.planId,
+          planId: normalizedPlan,
           subtotal: amount,
           tax,
           total,
