@@ -50,6 +50,11 @@ export class ReplayService {
     };
   }
 
+  private static isValidUuid(val?: string | null): boolean {
+    if (!val) return false;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+  }
+
   private static async recordAttempt(params: {
     webhookEventId: string;
     adminId?: string | null;
@@ -68,7 +73,7 @@ export class ReplayService {
            RETURNING id`,
           [
             params.webhookEventId,
-            params.adminId || null,
+            this.isValidUuid(params.adminId) ? params.adminId : null,
             params.resultStatus,
             params.errorCode || null,
             params.errorMessage || null,
@@ -122,20 +127,46 @@ export class ReplayService {
       };
     }
 
-    // 3. Enforce bounded replay policy (max 10 attempts)
-    if (event.attemptCount >= 10) {
-      await webhookRepo.markFailed(event.id, 'MAX_ATTEMPTS_EXCEEDED', 'Maksimum batas replay percobaan (10) telah terlampaui.');
+    // 2.5 Permanent domain failure check / legacy reopen check
+    if (event.processingStatus === 'FAILED_FINAL') {
+      if (adminId && event.lastErrorCode === 'MAX_ATTEMPTS_EXCEEDED') {
+        // Reopen legacy transient-exhausted event for platform admin recovery
+        await webhookRepo.markReviewRequired(event.id, 'MAX_ATTEMPTS_EXCEEDED', 'Dibuka kembali oleh platform admin untuk pemulihan (recovery).');
+      } else {
+        // Permanent domain rejection remains terminal FAILED_FINAL
+        const attemptId = await this.recordAttempt({
+          webhookEventId: event.id,
+          adminId,
+          resultStatus: 'FAILED',
+          errorCode: event.lastErrorCode || 'FAILED_FINAL',
+          errorMessage: 'Event ditolak secara permanen (FAILED_FINAL) dan tidak dapat di-replay.',
+          durationMs: Date.now() - startTime
+        });
+        return {
+          status: 'FAILED',
+          message: 'Event ditolak secara permanen (FAILED_FINAL) dan tidak dapat di-replay.',
+          attemptId
+        };
+      }
+    }
+
+    // 3. Enforce bounded replay policy for unattended / system retry
+    // Automated/system retry is bounded to 10 attempts to prevent infinite loops.
+    // However, platform admin manual recovery (adminId present) is explicitly authorized
+    // to replay exhausted transient events once the canonical root cause is fixed.
+    if (event.attemptCount >= 10 && !adminId) {
+      await webhookRepo.markReviewRequired(event.id, 'MAX_ATTEMPTS_EXCEEDED', 'Maksimum batas replay percobaan (10) telah terlampaui.');
       const attemptId = await this.recordAttempt({
         webhookEventId: event.id,
-        adminId,
-        resultStatus: 'FAILED',
+        adminId: null,
+        resultStatus: 'REVIEW_REQUIRED',
         errorCode: 'MAX_ATTEMPTS_EXCEEDED',
-        errorMessage: 'Maksimum batas replay percobaan telah terlampaui.',
+        errorMessage: 'Maksimum batas replay otomatis telah terlampaui. Memerlukan peninjauan manual operator.',
         durationMs: Date.now() - startTime
       });
       return {
-        status: 'FAILED',
-        message: 'Maksimum batas replay percobaan (10) telah terlampaui. Status ditandai FAILED_FINAL.',
+        status: 'REVIEW_REQUIRED',
+        message: 'Maksimum batas replay percobaan (10) telah terlampaui. Status ditandai REVIEW_REQUIRED.',
         attemptId
       };
     }
@@ -226,18 +257,23 @@ export class ReplayService {
 
         if (settlementResult.status === 'IGNORED') {
           // Out of order: checkout still not found
-          await webhookRepo.markReviewRequired(event.id, 'UNKNOWN_CHECKOUT_REF', settlementResult.message);
+          const isExhausted = (event.attemptCount + 1) >= 10;
+          const errorCode = isExhausted ? 'MAX_ATTEMPTS_EXCEEDED' : 'UNKNOWN_CHECKOUT_REF';
+          const errorMsg = isExhausted
+            ? `Batas percobaan (${10}) telah tercapai: ${settlementResult.message}`
+            : settlementResult.message;
+          await webhookRepo.markReviewRequired(event.id, errorCode, errorMsg);
           const attemptId = await this.recordAttempt({
             webhookEventId: event.id,
             adminId,
             resultStatus: 'REVIEW_REQUIRED',
-            errorCode: 'UNKNOWN_CHECKOUT_REF',
-            errorMessage: settlementResult.message,
+            errorCode,
+            errorMessage: errorMsg,
             durationMs: Date.now() - startTime
           });
           return {
             status: 'REVIEW_REQUIRED',
-            message: settlementResult.message,
+            message: errorMsg,
             attemptId
           };
         }
@@ -290,12 +326,18 @@ export class ReplayService {
         attemptId
       };
     } catch (err: any) {
-      await webhookRepo.markRetryable(event.id, 'REPLAY_EXCEPTION', err.message || 'Unknown exception');
+      const isExhausted = (event.attemptCount + 1) >= 10;
+      const errorCode = isExhausted ? 'MAX_ATTEMPTS_EXCEEDED' : 'REPLAY_EXCEPTION';
+      if (isExhausted) {
+        await webhookRepo.markReviewRequired(event.id, errorCode, err.message || 'Maksimum percobaan replay terlampaui.');
+      } else {
+        await webhookRepo.markRetryable(event.id, errorCode, err.message || 'Unknown exception');
+      }
       const attemptId = await this.recordAttempt({
         webhookEventId: event.id,
         adminId,
-        resultStatus: 'FAILED',
-        errorCode: 'REPLAY_EXCEPTION',
+        resultStatus: isExhausted ? 'REVIEW_REQUIRED' : 'FAILED',
+        errorCode,
         errorMessage: err.message,
         durationMs: Date.now() - startTime
       });

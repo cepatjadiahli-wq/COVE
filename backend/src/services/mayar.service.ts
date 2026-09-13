@@ -265,6 +265,18 @@ export class MayarService {
             message: 'Event ID sudah pernah diproses sebelumnya. Tidak ada mutasi ganda.'
           };
         }
+        if (existing.processingStatus === 'REVIEW_REQUIRED' && (existing.attemptCount >= 10 || existing.lastErrorCode === 'MAX_ATTEMPTS_EXCEEDED')) {
+          return {
+            status: 'IGNORED',
+            message: 'Event memerlukan peninjauan manual admin karena batas percobaan otomatis terlampaui.'
+          };
+        }
+        if (existing.processingStatus === 'FAILED_FINAL') {
+          return {
+            status: 'ERROR',
+            message: 'Event telah ditandai FAILED_FINAL dan ditolak secara permanen.'
+          };
+        }
       }
 
       // 1. Record event durably as RECEIVED first (if not already existing)
@@ -330,10 +342,16 @@ export class MayarService {
 
         if (settlementResult.status === 'IGNORED') {
           // Out-of-order or unknown checkout: retain event as REVIEW_REQUIRED
-          await webhookRepo.markReviewRequired(internalEventId, 'UNKNOWN_CHECKOUT_REF', settlementResult.message);
+          const currentEvent = await webhookRepo.findWebhookEventById(internalEventId);
+          const isExhausted = (currentEvent?.attemptCount ?? 0) >= 10;
+          const errorCode = isExhausted ? 'MAX_ATTEMPTS_EXCEEDED' : 'UNKNOWN_CHECKOUT_REF';
+          const errorMsg = isExhausted
+            ? `Batas percobaan (${10}) telah tercapai: ${settlementResult.message}`
+            : settlementResult.message;
+          await webhookRepo.markReviewRequired(internalEventId, errorCode, errorMsg);
           return {
             status: 'IGNORED',
-            message: settlementResult.message
+            message: errorMsg
           };
         }
 

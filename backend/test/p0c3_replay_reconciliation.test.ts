@@ -505,9 +505,12 @@ test('P0C3-13: attempt_count increments via atomic SQL update', async () => {
 });
 
 // ----------------------------------------------------------------------------
-// P0C3-14: Bounded replay policy: max_attempts exceeded transitions to FAILED_FINAL
+// P0C3-14: Bounded replay policy: max_attempts exceeded retains REVIEW_REQUIRED (recoverable)
+// Semantic correction per P0-C3.1 (F-C3.1): transient retry exhaustion must NOT
+// transition to irreversible FAILED_FINAL. It must retain REVIEW_REQUIRED with
+// MAX_ATTEMPTS_EXCEEDED so that operators can recover genuine payments.
 // ----------------------------------------------------------------------------
-test('P0C3-14: Bounded replay policy: max_attempts exceeded transitions to FAILED_FINAL', async () => {
+test('P0C3-14: Bounded replay policy: max_attempts exceeded retains REVIEW_REQUIRED (recoverable)', async () => {
   const eventId = 'evt_p0c3_14_bounded';
   await sendSignedWebhook({
     event: 'payment.settled',
@@ -521,11 +524,14 @@ test('P0C3-14: Bounded replay policy: max_attempts exceeded transitions to FAILE
   // Artificially set attempt_count = 10 in DB
   await pglite.exec(`UPDATE public.webhook_events SET attempt_count = 10 WHERE id = '${event.id}'`);
 
-  const res = await ReplayService.replayWebhookEvent(event.id, 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa');
-  assert.strictEqual(res.status, 'FAILED');
+  // Unattended / system retry is bounded: stops without lease or FAILED_FINAL
+  const res = await ReplayService.replayWebhookEvent(event.id);
+  assert.strictEqual(res.status, 'REVIEW_REQUIRED');
 
   const updated = await pgWebhookRepo.findWebhookEventById(event.id);
-  assert.strictEqual(updated?.processingStatus, 'FAILED_FINAL');
+  assert.strictEqual(updated?.processingStatus, 'REVIEW_REQUIRED');
+  assert.strictEqual(updated?.lastErrorCode, 'MAX_ATTEMPTS_EXCEEDED');
+  assert.notStrictEqual(updated?.processingStatus, 'FAILED_FINAL');
 });
 
 // ----------------------------------------------------------------------------
