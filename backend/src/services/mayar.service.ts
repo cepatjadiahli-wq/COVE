@@ -259,6 +259,37 @@ export class MayarService {
             message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
           };
         }
+        if (existing.processingStatus === 'PROCESSED') {
+          return {
+            status: 'DUPLICATE',
+            message: 'Event ID sudah pernah diproses sebelumnya. Tidak ada mutasi ganda.'
+          };
+        }
+      }
+
+      // 1. Record event durably as RECEIVED first (if not already existing)
+      const recordResult = await webhookRepo.recordWebhookEvent({
+        eventId,
+        eventType: payload.event,
+        provider: 'MAYAR',
+        payload: payload as unknown as Record<string, unknown>,
+        payloadHash,
+        processedAt: new Date().toISOString(),
+        processingStatus: 'RECEIVED'
+      });
+
+      if (recordResult.status === 'CONFLICT') {
+        return {
+          status: 'CONFLICT',
+          message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
+        };
+      }
+
+      const internalEventId = recordResult.event.id;
+
+      // 2. Claim processing lease atomically
+      const leaseAcquired = await webhookRepo.claimProcessingLease(internalEventId);
+      if (!leaseAcquired && recordResult.status === 'DUPLICATE') {
         return {
           status: 'DUPLICATE',
           message: 'Event ID sudah pernah diproses sebelumnya. Tidak ada mutasi ganda.'
@@ -269,6 +300,7 @@ export class MayarService {
         const checkoutRef = payload.data?.id || (payload.data as any)?.checkout_id || (payload.data as any)?.checkout_reference;
 
         if (!checkoutRef) {
+          await webhookRepo.markReviewRequired(internalEventId, 'MISSING_CHECKOUT_REF', 'Settlement tanpa checkout reference tidak dapat diproses.');
           return {
             status: 'IGNORED',
             message: 'Settlement tanpa checkout reference tidak dapat diproses.'
@@ -278,18 +310,27 @@ export class MayarService {
         const billingSettlementRepo = getBillingSettlementRepository();
         const providerPaymentId = (payload.data as any)?.payment_id || (payload.data as any)?.transaction_id || payload.data?.id;
 
-        const settlementResult = await billingSettlementRepo.settlePayment({
-          provider: 'MAYAR',
-          checkoutReference: checkoutRef,
-          providerPaymentId: providerPaymentId || '',
-          providerEventId: eventId,
-          amount: payload.data?.amount,
-          currency: (payload.data as any)?.currency || 'IDR',
-          paymentStatus: payload.data?.status,
-          failureInjectionStep: payload.failureInjectionStep
-        });
+        let settlementResult;
+        try {
+          settlementResult = await billingSettlementRepo.settlePayment({
+            provider: 'MAYAR',
+            checkoutReference: checkoutRef,
+            providerPaymentId: providerPaymentId || '',
+            providerEventId: eventId,
+            amount: payload.data?.amount,
+            currency: (payload.data as any)?.currency || 'IDR',
+            paymentStatus: payload.data?.status,
+            failureInjectionStep: payload.failureInjectionStep
+          });
+        } catch (settleErr) {
+          // If settlement execution throws (e.g. crash window), clean up the webhook row so it is not inserted/retained
+          await webhookRepo.deleteWebhookEvent(internalEventId).catch(() => {});
+          throw settleErr;
+        }
 
         if (settlementResult.status === 'IGNORED') {
+          // Out-of-order or unknown checkout: retain event as REVIEW_REQUIRED
+          await webhookRepo.markReviewRequired(internalEventId, 'UNKNOWN_CHECKOUT_REF', settlementResult.message);
           return {
             status: 'IGNORED',
             message: settlementResult.message
@@ -297,6 +338,7 @@ export class MayarService {
         }
 
         if (settlementResult.status === 'REJECTED') {
+          await webhookRepo.markFailed(internalEventId, 'SETTLEMENT_REJECTED', settlementResult.message);
           return {
             status: 'ERROR',
             message: settlementResult.message
@@ -304,6 +346,7 @@ export class MayarService {
         }
 
         if (settlementResult.status === 'PAYMENT_CONFLICT') {
+          await webhookRepo.markReviewRequired(internalEventId, 'PAYMENT_CONFLICT', settlementResult.message);
           return {
             status: 'CONFLICT',
             message: settlementResult.message
@@ -311,19 +354,7 @@ export class MayarService {
         }
 
         if (settlementResult.status === 'DUPLICATE') {
-          const recRes = await webhookRepo.recordWebhookEvent({
-            eventId,
-            eventType: payload.event,
-            provider: 'MAYAR',
-            payload: payload as unknown as Record<string, unknown>,
-            payloadHash
-          });
-          if (recRes.status === 'CONFLICT') {
-            return {
-              status: 'CONFLICT',
-              message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
-            };
-          }
+          await webhookRepo.markProcessed(internalEventId);
           return {
             status: 'DUPLICATE',
             message: settlementResult.message
@@ -331,17 +362,10 @@ export class MayarService {
         }
 
         // Settlement successful (PROCESSED)
-        const recordResult = await webhookRepo.recordWebhookEvent({
-          eventId,
-          eventType: payload.event,
-          provider: 'MAYAR',
-          payload: payload as unknown as Record<string, unknown>,
-          payloadHash,
-          processedAt: new Date().toISOString()
-        });
+        await webhookRepo.markProcessed(internalEventId);
 
         const record: WebhookEventRecord = {
-          id: recordResult.event.id,
+          id: internalEventId,
           eventId,
           eventType: payload.event,
           provider: 'MAYAR',
@@ -350,7 +374,8 @@ export class MayarService {
           processedAt: recordResult.event.processedAt,
           conflictCount: recordResult.event.conflictCount,
           lastConflictHash: recordResult.event.lastConflictHash || undefined,
-          lastConflictAt: recordResult.event.lastConflictAt || undefined
+          lastConflictAt: recordResult.event.lastConflictAt || undefined,
+          processingStatus: 'PROCESSED'
         };
         db.webhooks.unshift(record);
         db.subscription.status = 'ACTIVE';
@@ -359,13 +384,6 @@ export class MayarService {
         }
         db.save();
 
-        if (recordResult.status === 'CONFLICT') {
-          return {
-            status: 'CONFLICT',
-            message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
-          };
-        }
-
         return {
           status: 'PROCESSED',
           message: settlementResult.message
@@ -373,16 +391,9 @@ export class MayarService {
       }
 
       if (payload.event === 'payment.expired') {
-        const recordResult = await webhookRepo.recordWebhookEvent({
-          eventId,
-          eventType: payload.event,
-          provider: 'MAYAR',
-          payload: payload as unknown as Record<string, unknown>,
-          payloadHash,
-          processedAt: new Date().toISOString()
-        });
+        await webhookRepo.markProcessed(internalEventId);
         const record: WebhookEventRecord = {
-          id: recordResult.event.id,
+          id: internalEventId,
           eventId,
           eventType: payload.event,
           provider: 'MAYAR',
@@ -391,17 +402,11 @@ export class MayarService {
           processedAt: recordResult.event.processedAt,
           conflictCount: recordResult.event.conflictCount,
           lastConflictHash: recordResult.event.lastConflictHash || undefined,
-          lastConflictAt: recordResult.event.lastConflictAt || undefined
+          lastConflictAt: recordResult.event.lastConflictAt || undefined,
+          processingStatus: 'PROCESSED'
         };
         db.webhooks.unshift(record);
         db.save();
-
-        if (recordResult.status === 'CONFLICT') {
-          return {
-            status: 'CONFLICT',
-            message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
-          };
-        }
 
         return {
           status: 'PROCESSED',
@@ -409,16 +414,9 @@ export class MayarService {
         };
       }
 
-      const recordResult = await webhookRepo.recordWebhookEvent({
-        eventId,
-        eventType: payload.event,
-        provider: 'MAYAR',
-        payload: payload as unknown as Record<string, unknown>,
-        payloadHash,
-        processedAt: new Date().toISOString()
-      });
+      await webhookRepo.markProcessed(internalEventId);
       const record: WebhookEventRecord = {
-        id: recordResult.event.id,
+        id: internalEventId,
         eventId,
         eventType: payload.event,
         provider: 'MAYAR',
@@ -427,17 +425,11 @@ export class MayarService {
         processedAt: recordResult.event.processedAt,
         conflictCount: recordResult.event.conflictCount,
         lastConflictHash: recordResult.event.lastConflictHash || undefined,
-        lastConflictAt: recordResult.event.lastConflictAt || undefined
+        lastConflictAt: recordResult.event.lastConflictAt || undefined,
+        processingStatus: 'PROCESSED'
       };
       db.webhooks.unshift(record);
       db.save();
-
-      if (recordResult.status === 'CONFLICT') {
-        return {
-          status: 'CONFLICT',
-          message: 'Event ID sudah terdaftar dengan payload hash berbeda (conflicting payload).'
-        };
-      }
 
       return {
         status: 'IGNORED',

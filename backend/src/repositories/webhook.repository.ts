@@ -21,6 +21,13 @@ export interface WebhookEventEntity {
   conflictCount: number;
   lastConflictHash?: string | null;
   lastConflictAt?: string | null;
+  // P0-C3 processing lifecycle fields
+  processingStatus: 'RECEIVED' | 'PROCESSING' | 'PROCESSED' | 'RETRYABLE' | 'REVIEW_REQUIRED' | 'FAILED_FINAL';
+  attemptCount: number;
+  processingStartedAt?: string | null;
+  lastAttemptAt?: string | null;
+  lastErrorCode?: string | null;
+  lastErrorMessage?: string | null;
 }
 
 export interface RecordWebhookInput {
@@ -31,6 +38,7 @@ export interface RecordWebhookInput {
   payload: Record<string, unknown>;
   payloadHash?: string;
   processedAt?: string;
+  processingStatus?: 'RECEIVED' | 'PROCESSING' | 'PROCESSED' | 'RETRYABLE' | 'REVIEW_REQUIRED' | 'FAILED_FINAL';
 }
 
 export interface RecordWebhookResult {
@@ -52,7 +60,19 @@ export interface QueryableWebhookPool {
 export interface IWebhookRepository {
   recordWebhookEvent(input: RecordWebhookInput): Promise<RecordWebhookResult>;
   findWebhookEvent(provider: string, eventId: string): Promise<WebhookEventEntity | null>;
+  findWebhookEventById(id: string): Promise<WebhookEventEntity | null>;
   getRecentWebhookEvents(limit?: number): Promise<WebhookEventEntity[]>;
+  // P0-C3: processing lifecycle management
+  markReceived(id: string): Promise<void>;
+  claimProcessingLease(id: string): Promise<boolean>;
+  markProcessed(id: string): Promise<void>;
+  markRetryable(id: string, errorCode: string, errorMessage: string): Promise<void>;
+  markReviewRequired(id: string, errorCode: string, errorMessage: string): Promise<void>;
+  markFailed(id: string, errorCode: string, errorMessage: string): Promise<void>;
+  recoverStaleLeases(leaseTimeoutMs?: number): Promise<string[]>;
+  listByStatus(status: string, limit?: number): Promise<WebhookEventEntity[]>;
+  listUnresolved(limit?: number): Promise<WebhookEventEntity[]>;
+  deleteWebhookEvent(id: string): Promise<void>;
 }
 
 /**
@@ -119,11 +139,12 @@ export class PostgresWebhookRepository implements IWebhookRepository {
     const processedAt = input.processedAt || new Date().toISOString();
     const validUuid = isValidUuid(input.id) ? input.id : null;
 
+    const initialStatus = input.processingStatus || 'PROCESSED';
+
     try {
       // 1. Initial existence check for idempotency and conflict detection
       const existingRes = await client.query(
-        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                conflict_count, last_conflict_hash, last_conflict_at
+        `SELECT ${this.fullSelectCols}
          FROM public.webhook_events
          WHERE provider = $1 AND event_id = $2`,
         [provider, input.eventId]
@@ -139,8 +160,7 @@ export class PostgresWebhookRepository implements IWebhookRepository {
                  last_conflict_hash = $1,
                  last_conflict_at = NOW()
              WHERE id = $2
-             RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                       conflict_count, last_conflict_hash, last_conflict_at`,
+             RETURNING ${this.fullSelectCols}`,
             [payloadHash, existing.id]
           );
           return {
@@ -161,14 +181,13 @@ export class PostgresWebhookRepository implements IWebhookRepository {
       const insertRes = await client.query(
         `INSERT INTO public.webhook_events (
            id, event_id, provider, event_type, payload, payload_hash, processed_at,
-           conflict_count, last_conflict_hash, last_conflict_at
+           conflict_count, last_conflict_hash, last_conflict_at, processing_status, attempt_count
          ) VALUES (
            COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5::jsonb, $6, $7::timestamptz,
-           0, NULL, NULL
+           0, NULL, NULL, $8, 0
          )
          ON CONFLICT (provider, event_id) DO NOTHING
-         RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                   conflict_count, last_conflict_hash, last_conflict_at`,
+         RETURNING ${this.fullSelectCols}`,
         [
           validUuid,
           input.eventId,
@@ -176,15 +195,15 @@ export class PostgresWebhookRepository implements IWebhookRepository {
           input.eventType,
           JSON.stringify(input.payload),
           payloadHash,
-          processedAt
+          processedAt,
+          initialStatus
         ]
       );
 
       if (insertRes.rows.length === 0) {
         // Race condition: concurrent transaction committed between check and insert
         const raceRes = await client.query(
-          `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                  conflict_count, last_conflict_hash, last_conflict_at
+          `SELECT ${this.fullSelectCols}
            FROM public.webhook_events
            WHERE provider = $1 AND event_id = $2`,
           [provider, input.eventId]
@@ -198,8 +217,7 @@ export class PostgresWebhookRepository implements IWebhookRepository {
                    last_conflict_hash = $1,
                    last_conflict_at = NOW()
                WHERE id = $2
-               RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                         conflict_count, last_conflict_hash, last_conflict_at`,
+               RETURNING ${this.fullSelectCols}`,
               [payloadHash, raced.id]
             );
             return {
@@ -225,8 +243,7 @@ export class PostgresWebhookRepository implements IWebhookRepository {
       // Standalone event_id unique constraint race fallback
       if (err.code === '23505') {
         const raceRes = await client.query(
-          `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                  conflict_count, last_conflict_hash, last_conflict_at
+          `SELECT ${this.fullSelectCols}
            FROM public.webhook_events
            WHERE provider = $1 AND event_id = $2`,
           [provider, input.eventId]
@@ -240,8 +257,7 @@ export class PostgresWebhookRepository implements IWebhookRepository {
                    last_conflict_hash = $1,
                    last_conflict_at = NOW()
                WHERE id = $2
-               RETURNING id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                         conflict_count, last_conflict_hash, last_conflict_at`,
+               RETURNING ${this.fullSelectCols}`,
               [payloadHash, raced.id]
             );
             return {
@@ -267,8 +283,7 @@ export class PostgresWebhookRepository implements IWebhookRepository {
     const client = await this.getClient();
     try {
       const res = await client.query(
-        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                conflict_count, last_conflict_hash, last_conflict_at
+        `SELECT ${this.fullSelectCols}
          FROM public.webhook_events
          WHERE provider = $1 AND event_id = $2`,
         [provider, eventId]
@@ -284,8 +299,7 @@ export class PostgresWebhookRepository implements IWebhookRepository {
     const client = await this.getClient();
     try {
       const res = await client.query(
-        `SELECT id, event_id, provider, event_type, payload, payload_hash, processed_at,
-                conflict_count, last_conflict_hash, last_conflict_at
+        `SELECT ${this.fullSelectCols}
          FROM public.webhook_events
          ORDER BY processed_at DESC
          LIMIT $1`,
@@ -308,10 +322,214 @@ export class PostgresWebhookRepository implements IWebhookRepository {
       processedAt: row.processed_at instanceof Date ? row.processed_at.toISOString() : String(row.processed_at),
       conflictCount: Number(row.conflict_count) || 0,
       lastConflictHash: row.last_conflict_hash || null,
-      lastConflictAt: row.last_conflict_at instanceof Date ? row.last_conflict_at.toISOString() : (row.last_conflict_at ? String(row.last_conflict_at) : null)
+      lastConflictAt: row.last_conflict_at instanceof Date ? row.last_conflict_at.toISOString() : (row.last_conflict_at ? String(row.last_conflict_at) : null),
+      // P0-C3 lifecycle fields (default to 'PROCESSED' for pre-018 rows that lack the column)
+      processingStatus: row.processing_status || 'PROCESSED',
+      attemptCount: Number(row.attempt_count) || 0,
+      processingStartedAt: row.processing_started_at instanceof Date ? row.processing_started_at.toISOString() : (row.processing_started_at ? String(row.processing_started_at) : null),
+      lastAttemptAt: row.last_attempt_at instanceof Date ? row.last_attempt_at.toISOString() : (row.last_attempt_at ? String(row.last_attempt_at) : null),
+      lastErrorCode: row.last_error_code || null,
+      lastErrorMessage: row.last_error_message || null
     };
   }
+
+  // ---------- P0-C3 Lifecycle Methods ----------
+
+  private get fullSelectCols(): string {
+    return `id, event_id, provider, event_type, payload, payload_hash, processed_at,
+            conflict_count, last_conflict_hash, last_conflict_at,
+            processing_status, attempt_count, processing_started_at,
+            last_attempt_at, last_error_code, last_error_message`;
+  }
+
+  async findWebhookEventById(id: string): Promise<WebhookEventEntity | null> {
+    const client = await this.getClient();
+    try {
+      const res = await client.query(
+        `SELECT ${this.fullSelectCols} FROM public.webhook_events WHERE id = $1`,
+        [id]
+      );
+      if (res.rows.length === 0) return null;
+      return this.mapRow(res.rows[0]);
+    } finally {
+      client.release();
+    }
+  }
+
+  async markReceived(id: string): Promise<void> {
+    const client = await this.getClient();
+    try {
+      await client.query(
+        `UPDATE public.webhook_events
+         SET processing_status = 'RECEIVED',
+             last_attempt_at = NOW()
+         WHERE id = $1 AND processing_status = 'RECEIVED'`,
+        [id]
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async claimProcessingLease(id: string): Promise<boolean> {
+    const client = await this.getClient();
+    try {
+      // Atomically move RECEIVED → PROCESSING; also recover stale PROCESSING leases
+      const res = await client.query(
+        `UPDATE public.webhook_events
+         SET processing_status = 'PROCESSING',
+             processing_started_at = NOW(),
+             last_attempt_at = NOW(),
+             attempt_count = attempt_count + 1
+         WHERE id = $1
+           AND (
+             processing_status = 'RECEIVED'
+             OR processing_status = 'RETRYABLE'
+             OR processing_status = 'REVIEW_REQUIRED'
+             OR (processing_status = 'PROCESSING'
+                 AND processing_started_at < NOW() - INTERVAL '5 minutes')
+           )
+         RETURNING id`,
+        [id]
+      );
+      return res.rows.length > 0;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markProcessed(id: string): Promise<void> {
+    const client = await this.getClient();
+    try {
+      await client.query(
+        `UPDATE public.webhook_events
+         SET processing_status = 'PROCESSED',
+             last_attempt_at = NOW(),
+             last_error_code = NULL,
+             last_error_message = NULL
+         WHERE id = $1`,
+        [id]
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async markRetryable(id: string, errorCode: string, errorMessage: string): Promise<void> {
+    const client = await this.getClient();
+    try {
+      await client.query(
+        `UPDATE public.webhook_events
+         SET processing_status = 'RETRYABLE',
+             last_attempt_at = NOW(),
+             last_error_code = $2,
+             last_error_message = $3
+         WHERE id = $1`,
+        [id, errorCode, errorMessage.slice(0, 1000)]
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async markReviewRequired(id: string, errorCode: string, errorMessage: string): Promise<void> {
+    const client = await this.getClient();
+    try {
+      await client.query(
+        `UPDATE public.webhook_events
+         SET processing_status = 'REVIEW_REQUIRED',
+             last_attempt_at = NOW(),
+             last_error_code = $2,
+             last_error_message = $3
+         WHERE id = $1`,
+        [id, errorCode, errorMessage.slice(0, 1000)]
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async markFailed(id: string, errorCode: string, errorMessage: string): Promise<void> {
+    const client = await this.getClient();
+    try {
+      await client.query(
+        `UPDATE public.webhook_events
+         SET processing_status = 'FAILED_FINAL',
+             last_attempt_at = NOW(),
+             last_error_code = $2,
+             last_error_message = $3
+         WHERE id = $1`,
+        [id, errorCode, errorMessage.slice(0, 1000)]
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async recoverStaleLeases(leaseTimeoutMs: number = 5 * 60 * 1000): Promise<string[]> {
+    const client = await this.getClient();
+    try {
+      const intervalSeconds = Math.floor(leaseTimeoutMs / 1000);
+      const res = await client.query(
+        `UPDATE public.webhook_events
+         SET processing_status = 'RETRYABLE',
+             last_error_code = 'STALE_LEASE',
+             last_error_message = 'Processing lease expired without completion. Recovered to RETRYABLE.'
+         WHERE processing_status = 'PROCESSING'
+           AND processing_started_at < NOW() - ($1 || ' seconds')::INTERVAL
+         RETURNING id`,
+        [intervalSeconds]
+      );
+      return res.rows.map((r: any) => r.id);
+    } finally {
+      client.release();
+    }
+  }
+
+  async listByStatus(status: string, limit: number = 50): Promise<WebhookEventEntity[]> {
+    const client = await this.getClient();
+    try {
+      const res = await client.query(
+        `SELECT ${this.fullSelectCols}
+         FROM public.webhook_events
+         WHERE processing_status = $1
+         ORDER BY last_attempt_at DESC NULLS LAST
+         LIMIT $2`,
+        [status, limit]
+      );
+      return res.rows.map((row: any) => this.mapRow(row));
+    } finally {
+      client.release();
+    }
+  }
+
+  async listUnresolved(limit: number = 50): Promise<WebhookEventEntity[]> {
+    const client = await this.getClient();
+    try {
+      const res = await client.query(
+        `SELECT ${this.fullSelectCols}
+         FROM public.webhook_events
+         WHERE processing_status IN ('RETRYABLE', 'REVIEW_REQUIRED')
+         ORDER BY last_attempt_at DESC NULLS LAST
+         LIMIT $1`,
+        [limit]
+      );
+      return res.rows.map((row: any) => this.mapRow(row));
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteWebhookEvent(id: string): Promise<void> {
+    const client = await this.getClient();
+    try {
+      await client.query(`DELETE FROM public.webhook_events WHERE id = $1`, [id]);
+    } finally {
+      client.release();
+    }
+  }
 }
+
 
 export class InMemoryWebhookRepository implements IWebhookRepository {
   public events: WebhookEventEntity[] = [];
@@ -341,7 +559,14 @@ export class InMemoryWebhookRepository implements IWebhookRepository {
       processedAt: input.processedAt || new Date().toISOString(),
       conflictCount: 0,
       lastConflictHash: null,
-      lastConflictAt: null
+      lastConflictAt: null,
+      // P0-C3 lifecycle defaults: new events start RECEIVED; direct inserts default PROCESSED
+      processingStatus: (input as any).processingStatus || 'PROCESSED',
+      attemptCount: 0,
+      processingStartedAt: null,
+      lastAttemptAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null
     };
 
     this.events.unshift(event);
@@ -353,14 +578,123 @@ export class InMemoryWebhookRepository implements IWebhookRepository {
     return found ? { ...found } : null;
   }
 
+  async findWebhookEventById(id: string): Promise<WebhookEventEntity | null> {
+    const found = this.events.find(e => e.id === id);
+    return found ? { ...found } : null;
+  }
+
   async getRecentWebhookEvents(limit: number = 50): Promise<WebhookEventEntity[]> {
     return this.events.slice(0, limit).map(e => ({ ...e }));
+  }
+
+  // ---------- P0-C3 Lifecycle Methods ----------
+
+  async markReceived(id: string): Promise<void> {
+    const ev = this.events.find(e => e.id === id);
+    if (ev) {
+      ev.processingStatus = 'RECEIVED';
+      ev.lastAttemptAt = new Date().toISOString();
+    }
+  }
+
+  async claimProcessingLease(id: string): Promise<boolean> {
+    const ev = this.events.find(e => e.id === id);
+    if (!ev) return false;
+    const now = Date.now();
+    const isStale = ev.processingStatus === 'PROCESSING' &&
+      ev.processingStartedAt &&
+      (now - new Date(ev.processingStartedAt).getTime()) > 5 * 60 * 1000;
+    if (ev.processingStatus === 'RECEIVED' || ev.processingStatus === 'RETRYABLE' || ev.processingStatus === 'REVIEW_REQUIRED' || isStale) {
+      ev.processingStatus = 'PROCESSING';
+      ev.processingStartedAt = new Date().toISOString();
+      ev.lastAttemptAt = new Date().toISOString();
+      ev.attemptCount = (ev.attemptCount || 0) + 1; // In-memory only: JS increment acceptable since no concurrent DB needed
+      return true;
+    }
+    return false;
+  }
+
+  async markProcessed(id: string): Promise<void> {
+    const ev = this.events.find(e => e.id === id);
+    if (ev) {
+      ev.processingStatus = 'PROCESSED';
+      ev.lastAttemptAt = new Date().toISOString();
+      ev.lastErrorCode = null;
+      ev.lastErrorMessage = null;
+    }
+  }
+
+  async markRetryable(id: string, errorCode: string, errorMessage: string): Promise<void> {
+    const ev = this.events.find(e => e.id === id);
+    if (ev) {
+      ev.processingStatus = 'RETRYABLE';
+      ev.lastAttemptAt = new Date().toISOString();
+      ev.lastErrorCode = errorCode;
+      ev.lastErrorMessage = errorMessage.slice(0, 1000);
+    }
+  }
+
+  async markReviewRequired(id: string, errorCode: string, errorMessage: string): Promise<void> {
+    const ev = this.events.find(e => e.id === id);
+    if (ev) {
+      ev.processingStatus = 'REVIEW_REQUIRED';
+      ev.lastAttemptAt = new Date().toISOString();
+      ev.lastErrorCode = errorCode;
+      ev.lastErrorMessage = errorMessage.slice(0, 1000);
+    }
+  }
+
+  async markFailed(id: string, errorCode: string, errorMessage: string): Promise<void> {
+    const ev = this.events.find(e => e.id === id);
+    if (ev) {
+      ev.processingStatus = 'FAILED_FINAL';
+      ev.lastAttemptAt = new Date().toISOString();
+      ev.lastErrorCode = errorCode;
+      ev.lastErrorMessage = errorMessage.slice(0, 1000);
+    }
+  }
+
+  async recoverStaleLeases(leaseTimeoutMs: number = 5 * 60 * 1000): Promise<string[]> {
+    const now = Date.now();
+    const recovered: string[] = [];
+    for (const ev of this.events) {
+      if (
+        ev.processingStatus === 'PROCESSING' &&
+        ev.processingStartedAt &&
+        (now - new Date(ev.processingStartedAt).getTime()) > leaseTimeoutMs
+      ) {
+        ev.processingStatus = 'RETRYABLE';
+        ev.lastErrorCode = 'STALE_LEASE';
+        ev.lastErrorMessage = 'Processing lease expired without completion. Recovered to RETRYABLE.';
+        recovered.push(ev.id);
+      }
+    }
+    return recovered;
+  }
+
+  async listByStatus(status: string, limit: number = 50): Promise<WebhookEventEntity[]> {
+    return this.events
+      .filter(e => e.processingStatus === status)
+      .slice(0, limit)
+      .map(e => ({ ...e }));
+  }
+
+  async listUnresolved(limit: number = 50): Promise<WebhookEventEntity[]> {
+    return this.events
+      .filter(e => e.processingStatus === 'RETRYABLE' || e.processingStatus === 'REVIEW_REQUIRED')
+      .slice(0, limit)
+      .map(e => ({ ...e }));
+  }
+
+  async deleteWebhookEvent(id: string): Promise<void> {
+    this.events = this.events.filter(e => e.id !== id);
   }
 
   reset(): void {
     this.events = [];
   }
 }
+
 
 // Global active webhook repository
 let customWebhookRepositorySet = false;
