@@ -14,6 +14,7 @@ import { pgPool } from '../db/store.js';
 import { getWebhookRepository } from '../repositories/webhook.repository.js';
 import { getBillingSettlementRepository } from '../repositories/billing_settlement.repository.js';
 import type { ReplayResultStatus } from '../types/domain.js';
+import { getMayarPaymentReferences } from '../utils/mayar-webhook.js';
 
 export interface ReplayResult {
   status: ReplayResultStatus;
@@ -192,8 +193,11 @@ export class ReplayService {
     // 5. Execute canonical settlement flow
     try {
       const payload: any = event.payload || {};
-      if (event.eventType === 'payment.settled') {
-        const checkoutRef = payload.data?.id || payload.data?.checkout_id || payload.data?.checkout_reference;
+      if (event.eventType === 'payment.settled' || event.eventType === 'payment.received') {
+        const references = getMayarPaymentReferences(payload.data || {});
+        const checkoutRef = event.eventType === 'payment.received'
+          ? references.checkoutReference
+          : payload.data?.id || payload.data?.checkout_id || payload.data?.checkout_reference;
         if (!checkoutRef) {
           await webhookRepo.markReviewRequired(event.id, 'MISSING_CHECKOUT_REF', 'Settlement tanpa checkout reference tidak dapat diproses.');
           const attemptId = await this.recordAttempt({
@@ -210,8 +214,16 @@ export class ReplayService {
           };
         }
 
-        const providerPaymentId = payload.data?.payment_id || payload.data?.transaction_id || payload.data?.id;
+        const providerPaymentId = event.eventType === 'payment.received'
+          ? references.providerPaymentId
+          : payload.data?.payment_id || payload.data?.transaction_id || payload.data?.id;
         const billingSettlementRepo = getBillingSettlementRepository();
+
+        const rawStatus = (payload.data?.status || '').toUpperCase();
+        const txStatus = (payload.data?.transactionStatus || '').toLowerCase();
+        const normalizedPaymentStatus = (event.eventType === 'payment.received')
+          ? (rawStatus === 'SUCCESS' && txStatus === 'paid' ? 'settled' : 'rejected')
+          : (payload.data?.status || 'settled');
 
         const settlementResult = await billingSettlementRepo.settlePayment({
           provider: event.provider || 'MAYAR',
@@ -220,7 +232,7 @@ export class ReplayService {
           providerEventId: event.eventId,
           amount: payload.data?.amount,
           currency: payload.data?.currency || 'IDR',
-          paymentStatus: payload.data?.status || 'settled'
+          paymentStatus: normalizedPaymentStatus
         });
 
         if (settlementResult.status === 'PROCESSED') {

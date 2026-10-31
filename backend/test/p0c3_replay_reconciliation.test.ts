@@ -868,3 +868,39 @@ test('P0C3-25: Full P0-C2 atomic settlement invariants remain preserved', async 
   assert.strictEqual(sub.rows[0].status, 'ACTIVE');
   assert.strictEqual(sub.rows[0].plan_id, 'core');
 });
+
+test('Mayar V2: official callback arriving before checkout replays with the same transaction identity', async () => {
+  const requestId = 'mayar-request-late';
+  const transactionId = 'mayar-transaction-late';
+  const payload = {event:'payment.received', data:{
+    id:transactionId, transactionId, productId:requestId, productType:'payment_request',
+    amount:5439000, status:'SUCCESS', transactionStatus:'paid'
+  }};
+  const first = await sendSignedWebhook(payload);
+  assert.strictEqual(first.status, 200);
+  assert.strictEqual((await first.json()).result, 'IGNORED');
+  const event = await pgWebhookRepo.findWebhookEvent('MAYAR', `payment.received:${transactionId}`);
+  assert.ok(event);
+  assert.strictEqual(event.lastErrorCode, 'UNKNOWN_CHECKOUT_REF');
+
+  await pglite.query(`INSERT INTO public.checkout_sessions
+    (organization_id, provider, provider_reference, provider_checkout_id, status, plan, amount, currency)
+    VALUES ($1, 'MAYAR', $2, $3, 'PENDING', 'core', 5439000, 'IDR')`, [ORG_B_ID, requestId, transactionId]);
+  const before = await pglite.query('SELECT current_period_end FROM public.subscriptions WHERE org_id = $1', [ORG_A_ID]);
+  const replay = await ReplayService.replayWebhookEvent(event.id, 'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa');
+  assert.strictEqual(replay.status, 'REPLAYED');
+  const payments = await pglite.query('SELECT organization_id, provider_payment_id FROM public.billing_payments WHERE provider_payment_id = $1', [transactionId]);
+  assert.strictEqual(payments.rows.length, 1);
+  assert.strictEqual(payments.rows[0].organization_id, ORG_B_ID);
+  const sub = await pglite.query('SELECT status FROM public.subscriptions WHERE org_id = $1', [ORG_B_ID]);
+  assert.strictEqual(sub.rows[0].status, 'ACTIVE');
+  assert.strictEqual((await sendSignedWebhook(payload)).status, 200);
+  assert.strictEqual((await ReplayService.replayWebhookEvent(event.id)).status, 'ALREADY_PROCESSED');
+  // Reprocessing after a status-repair must deduplicate on the same payment ID.
+  await pgWebhookRepo.markReviewRequired(event.id, 'RETRY_AFTER_STATUS_REPAIR', 'test');
+  assert.strictEqual((await ReplayService.replayWebhookEvent(event.id)).status, 'ALREADY_PROCESSED');
+  const after = await pglite.query('SELECT current_period_end FROM public.subscriptions WHERE org_id = $1', [ORG_A_ID]);
+  assert.deepStrictEqual(after.rows, before.rows, 'Other tenant subscription must not change');
+  const count = await pglite.query('SELECT COUNT(*) AS cnt FROM public.billing_payments WHERE provider_payment_id = $1', [transactionId]);
+  assert.strictEqual(Number(count.rows[0].cnt), 1);
+});

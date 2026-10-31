@@ -70,6 +70,11 @@ export const api = {
     request<any>('/organizations', { method: 'POST', body: JSON.stringify(data) }),
   updateOrganization: (orgId: string, data: { legalName?: string; displayName?: string }) =>
     request<any>(`/organizations/${orgId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // P0-C6: Update current user profile (fullName, phone) → PATCH /api/auth/profile
+  // Canonical phone persists to public.profiles.phone — single source of truth.
+  updateProfile: (data: { fullName?: string; phone?: string }) =>
+    request<any>('/auth/profile', { method: 'PATCH', body: JSON.stringify(data) }),
+
 
   // Projects
   getProjects: (archived = false) => request<any[]>(`/projects?archived=${archived}`),

@@ -212,9 +212,15 @@ export function InvitationPage(){
   );
 }
 
+function isValidPhone(value: string): boolean {
+  return /^(\+62|62|0)8[1-9][0-9]{7,11}$/.test(value.replace(/[\s\-().]/g, ''));
+}
+
 export function OnboardingCompanyPage(){
   const s=useStore();const {query,go}=useRoute();const plan=parsePlan(query.get('plan'))??s.journey.intent;
   const [company,setCompany]=useState(s.onboarding.company);const [legal,setLegal]=useState('PT');const [address,setAddress]=useState('');const [tax,setTax]=useState('');const [wa,setWa]=useState(false);const [error,setError]=useState('');
+  // P0-C6: phone collected here, persisted to public.profiles.phone via PATCH /api/auth/profile
+  const [phone,setPhone]=useState((s.actor as any)?.phone || '');
   const [busy,setBusy]=useState(false);
 
   if(!s.journey.enabled||s.authStatus !== 'authenticated')return <AccessRequired/>;
@@ -227,15 +233,20 @@ export function OnboardingCompanyPage(){
       setError('Lengkapi nama dan alamat perusahaan.');
       return;
     }
+    if(!phone.trim()||!isValidPhone(phone)){
+      setError('Nomor HP wajib diisi dengan format Indonesia yang valid (contoh: 0812-3456-7890 atau +62812...).');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      // Option A: Canonical server write to /api/organizations
+      // Persist the phone first so failure cannot leave a half-completed company step.
+      await api.updateProfile({ phone: phone.trim() });
       await api.createOrganization({
         legalName: company.trim(),
         displayName: company.trim()
       });
-      // Synchronize canonical state from backend
+      // 3. Synchronize canonical state from backend (actor.phone now populated)
       await s.reloadData();
       go('/checkout' + intentQuery(plan));
     } catch (err: any) {
@@ -245,13 +256,16 @@ export function OnboardingCompanyPage(){
     }
   }
 
-  return <AccessLayout title="Kenali perusahaan Anda." description="Identitas ini digunakan untuk organisasi dan tagihan layanan COVE. Belum perlu mengisi data proyek."><ProgressSteps current={1}/><PreviewDisclosure/><form onSubmit={submit} className="stack"><Field label="Nama legal perusahaan" required value={company} onChange={e=>setCompany(e.target.value)} placeholder="Contoh: PT Konstruksi Nusantara"/><Choice label="Bentuk usaha" value={legal} onChange={setLegal} options={['PT','CV','Lainnya']}/><Field label="Alamat perusahaan" multiline required value={address} onChange={e=>setAddress(e.target.value)}/><Field label="NPWP (opsional)" value={tax} onChange={e=>setTax(e.target.value)} hint="NPWP 15 atau 16 digit perusahaan untuk penerbitan faktur."/><CheckBox label="Saya bersedia dihubungi lewat WhatsApp tentang informasi layanan COVE (opsional)." checked={wa} onChange={setWa}/><p className="footnote">Izin ini terpisah dari analitik platform. Dapat ditarik kembali sewaktu-waktu.</p>{error&&<Notice tone="danger">{error}</Notice>}<Btn type="submit" disabled={busy}>{busy ? 'Menyimpan ke server…' : 'Simpan Identitas Perusahaan'} <ArrowRight size={16}/></Btn></form></AccessLayout>;
+  return <AccessLayout title="Kenali perusahaan Anda." description="Identitas ini digunakan untuk organisasi dan tagihan layanan COVE. Belum perlu mengisi data proyek."><ProgressSteps current={1}/><PreviewDisclosure/><form onSubmit={submit} className="stack"><Field label="Nama legal perusahaan" required value={company} onChange={e=>setCompany(e.target.value)} placeholder="Contoh: PT Konstruksi Nusantara"/><Choice label="Bentuk usaha" value={legal} onChange={setLegal} options={['PT','CV','Lainnya']}/><Field label="Alamat perusahaan" multiline required value={address} onChange={e=>setAddress(e.target.value)}/><Field label="Nomor HP / WhatsApp penanggung jawab" type="tel" required value={phone} onChange={e=>setPhone(e.target.value)} hint="Format: 0812-3456-7890 atau +62812... — digunakan Mayar untuk notifikasi pembayaran."/><Field label="NPWP (opsional)" value={tax} onChange={e=>setTax(e.target.value)} hint="NPWP 15 atau 16 digit perusahaan untuk penerbitan faktur."/><CheckBox label="Saya bersedia dihubungi lewat WhatsApp tentang informasi layanan COVE (opsional)." checked={wa} onChange={setWa}/><p className="footnote">Izin ini terpisah dari analitik platform. Dapat ditarik kembali sewaktu-waktu.</p>{error&&<Notice tone="danger">{error}</Notice>}<Btn type="submit" disabled={busy}>{busy ? 'Menyimpan ke server…' : 'Simpan & Lanjut ke Checkout'} <ArrowRight size={16}/></Btn></form></AccessLayout>;
 }
+
 
 export function CheckoutPage(){
   const s=useStore();const {query,go}=useRoute();const plan=parsePlan(query.get('plan'))??s.journey.intent;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [phone, setPhone] = useState<string | null>(null);
+  const checkoutPhone = phone ?? s.actor?.phone ?? '';
 
   if(!s.journey.enabled||s.authStatus !== 'authenticated')return <AccessRequired/>;
   if(!canReviewCheckout(s.journey))return <AccessLayout title="Lanjutkan proses yang sudah ada" description="Checkout baru tidak dibuat bila ada pembayaran menunggu, langganan aktif, atau langkah sebelumnya belum lengkap."><Link className="btn" href={afterAccess(s.journey,plan)}>Lanjutkan <ArrowRight size={16}/></Link></AccessLayout>;
@@ -263,10 +277,17 @@ export function CheckoutPage(){
   const total = subtotal + vat;
 
   async function proceedToCheckout() {
+    if (!isValidPhone(checkoutPhone)) {
+      setError('Isi nomor HP Indonesia yang valid untuk melanjutkan pembayaran.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
       if (!plan) return;
+      if (checkoutPhone.trim() !== s.actor?.phone) {
+        await api.updateProfile({phone:checkoutPhone.trim()});
+      }
       const checkoutRes = await api.createCheckout(plan);
       if (checkoutRes && checkoutRes.paymentUrl) {
         window.location.href = checkoutRes.paymentUrl;
@@ -274,9 +295,12 @@ export function CheckoutPage(){
         throw new Error('Penyedia pembayaran tidak mengembalikan URL pembayaran yang sah.');
       }
     } catch (err: any) {
-      const msg = err.error === 'PAYMENT_PROVIDER_NOT_CONFIGURED' || err.message?.includes('PAYMENT_PROVIDER_NOT_CONFIGURED')
-        ? 'Pembayaran belum tersedia pada tahap ini (Penyedia pembayaran belum dikonfigurasi).'
-        : (err.message || 'Gagal memulai checkout server.');
+      const msg =
+        err.code === 'MOBILE_REQUIRED' || err.message?.includes('MOBILE_REQUIRED')
+          ? 'Lengkapi nomor HP di halaman ini, lalu lanjutkan pembayaran.'
+          : err.error === 'PAYMENT_PROVIDER_NOT_CONFIGURED' || err.message?.includes('PAYMENT_PROVIDER_NOT_CONFIGURED')
+          ? 'Pembayaran belum tersedia pada tahap ini (Penyedia pembayaran belum dikonfigurasi).'
+          : (err.message || 'Gagal memulai checkout server.');
       setError(msg);
     } finally {
       setBusy(false);
@@ -302,6 +326,7 @@ export function CheckoutPage(){
           </dl>
         </div>
       </Panel>
+      <Field label="Nomor HP penanggung jawab" type="tel" required value={checkoutPhone} onChange={e=>setPhone(e.target.value)} hint="Digunakan untuk notifikasi pembayaran. Contoh: 0812-3456-7890."/>
       <Notice>Tagihan diproses resmi oleh server COVE (Mayar Gateway). Tidak ada debit otomatis tanpa otorisasi transaksi.</Notice>
       {error && <Notice tone="danger">{error}</Notice>}
       <div className="button-row">

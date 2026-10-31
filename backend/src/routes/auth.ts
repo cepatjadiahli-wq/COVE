@@ -8,6 +8,7 @@ import {Hono} from 'hono';
 import {requireAuth} from '../middleware/auth.middleware.js';
 import {AuthService} from '../services/auth.service.js';
 import {getIdentityRepository} from '../repositories/identity.repository.js';
+import {z} from 'zod';
 
 export const authRoute = new Hono();
 
@@ -48,6 +49,7 @@ authRoute.get('/auth/me', requireAuth, async (c) => {
         authUserId: actor.authUserId,
         name: actor.fullName,
         email: actor.email,
+        phone: actor.phone || null,
         orgId: actor.orgId,
         company: org ? (org.displayName || org.legalName) : '',
         role: actor.role,
@@ -171,6 +173,45 @@ authRoute.patch('/organizations/:id', requireAuth, async (c) => {
     return c.json({
       success: false,
       error: err.message || 'Gagal memperbarui data organisasi.'
+    }, 500);
+  }
+});
+
+const profileUpdateSchema = z.object({
+  fullName: z.string().trim().min(1).max(200).optional(),
+  phone: z.string().trim().max(32).refine(value =>
+    /^(\+62|62|0)8[1-9][0-9]{7,11}$/.test(value.replace(/[\s\-().]/g, '')),
+    'Nomor HP Indonesia tidak valid.'
+  ).optional()
+}).refine(value => value.fullName !== undefined || value.phone !== undefined);
+
+// PATCH /api/auth/profile
+// Updates current user's profile (fullName, phone)
+authRoute.patch('/auth/profile', requireAuth, async (c) => {
+  const actor = c.get('actor');
+  if (!actor || !actor.profileId) {
+    return c.json({
+      success: false,
+      error: 'Profil pengguna tidak teridentifikasi.'
+    }, 401);
+  }
+
+  const parsed = profileUpdateSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({success:false, code:'INVALID_PROFILE', error:'Isi nama atau nomor HP Indonesia yang valid.'}, 400);
+  }
+  const identityRepo = getIdentityRepository();
+  try {
+    const updated = await identityRepo.updateProfile(actor.profileId, parsed.data);
+
+    return c.json({
+      success: true,
+      data: updated
+    });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: err.message || 'Gagal memperbarui profil pengguna.'
     }, 500);
   }
 });
