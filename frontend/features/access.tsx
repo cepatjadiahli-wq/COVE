@@ -4,6 +4,7 @@ import {Link, useRoute} from '@/lib/router';
 import {useStore} from '@/lib/store';
 import {api} from '@/lib/api';
 import {supabase} from '@/lib/supabase';
+import {authErrorMessage, authQuery, pendingAuthEmail, rememberAuthEmail} from '@/lib/auth';
 import {PLANS, parsePlan, intentQuery, afterAccess, canReviewCheckout, canSetupProject, projectLimit, safePath, type Journey} from '@/lib/journey';
 import {money} from '@/lib/domain';
 import {PublicFrame} from './public';
@@ -23,34 +24,52 @@ export function LoginPage(){return <AuthForm/>;}
 export function SignupPage(){return <AuthForm signup/>;}
 function AuthForm({signup=false}:{signup?:boolean}) {
   const s=useStore(); const {query,go}=useRoute();const plan=parsePlan(query.get('plan'))??s.journey.intent;
-  const [name,setName]=useState('');const [email,setEmail]=useState('');const [password,setPassword]=useState('');const [agree,setAgree]=useState(false);const [error,setError]=useState('');const [busy,setBusy]=useState(false);
-  const returnTo=safePath(query.get('returnTo'));const suffix=intentQuery(plan)+(plan?'&':'?')+'returnTo='+encodeURIComponent(returnTo);
+  const [name,setName]=useState('');const [email,setEmail]=useState(pendingAuthEmail);const [password,setPassword]=useState('');const [showPassword,setShowPassword]=useState(false);const [agree,setAgree]=useState(false);const [error,setError]=useState('');const [busy,setBusy]=useState(false);const [unconfirmed,setUnconfirmed]=useState(false);const [retryAccount,setRetryAccount]=useState(false);
+  const returnTo=safePath(query.get('returnTo'), '');const suffix=authQuery(plan,returnTo);
+  useEffect(() => {
+    if (!busy && !error && s.authStatus === 'authenticated' && s.actor && s.journey.signedIn) {
+      rememberAuthEmail('');
+      go(afterAccess(s.journey, plan, returnTo));
+    }
+  }, [busy,error,s.authStatus,s.actor,s.journey,plan,returnTo,go]);
+  async function resumeAccount() {
+    setBusy(true);setError('');
+    try {
+      const account=await s.reloadData();
+      rememberAuthEmail('');
+      go(afterAccess(account,plan,returnTo));
+    } catch (err) {setRetryAccount(true);setError(authErrorMessage(err));}
+    finally {setBusy(false);}
+  }
   async function submit(e:FormEvent){
     e.preventDefault();
-    if(!email.trim()||password.length<8||(signup&&(!name.trim()||!agree))){
-      setError('Lengkapi identitas dan persetujuan; password minimal 8 karakter.');
+    if(busy)return;
+    if(!email.trim()||!password||(signup&&(password.length<8||!name.trim()||!agree))){
+      setError(signup?'Lengkapi nama, email, kata sandi minimal 8 karakter, dan persetujuan.':'Isi email dan kata sandi Anda.');
       return;
     }
     setBusy(true);
     setError('');
+    setUnconfirmed(false);
+    setRetryAccount(false);
+    rememberAuthEmail(email);
     try {
       if (signup) {
         const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
           email: email.trim(),
           password,
           options: {
+            emailRedirectTo: window.location.origin + '/verify-email' + suffix,
             data: { full_name: name.trim() }
           }
         });
         if (signUpError) throw signUpError;
         setPassword('');
-        // If session is created directly (e.g. auto-confirm enabled), reload server data
         if (signUpData?.session) {
-          await s.reloadData();
-          go('/onboarding' + suffix);
+          const account=await s.reloadData();
+          rememberAuthEmail('');
+          go(afterAccess(account,plan,returnTo));
         } else {
-          // Email confirmation is required: user remains UNAUTHENTICATED.
-          // Zero manual signedIn = true state!
           go('/verify-email' + suffix);
         }
       } else {
@@ -59,77 +78,130 @@ function AuthForm({signup=false}:{signup?:boolean}) {
           password
         });
         if (signInError) throw signInError;
-        await s.reloadData();
+        const account=await s.reloadData();
+        rememberAuthEmail('');
         setPassword('');
-        go(afterAccess(s.journey, plan, returnTo));
+        go(afterAccess(account, plan, returnTo));
       }
-    } catch(err: any) {
-      setError(err.message || 'Gagal masuk ke server.');
+    } catch(err) {
+      setUnconfirmed((err as {code?:string})?.code === 'email_not_confirmed');
+      setRetryAccount((err as {code?:string})?.code === 'APP_SESSION_LOAD_FAILED');
+      setError(authErrorMessage(err));
     } finally {
       setBusy(false);
     }
   }
-  return <AccessLayout title={signup?'Mulai dengan akun Anda.':'Selamat datang kembali.'} description={plan?'Pilihan Anda: '+PLANS[plan].name+'. Identitas perusahaan dilengkapi sebelum checkout.':'Masuk ke perusahaan Anda, atau bergabung melalui undangan tim.'}><ProgressSteps current={0}/><PreviewDisclosure/>
-    <form className="stack" onSubmit={submit}>{signup&&<Field label="Nama lengkap" autoComplete="name" required value={name} onChange={e=>setName(e.target.value)}/>}<Field label="Email kerja" type="email" autoComplete="email" required value={email} onChange={e=>setEmail(e.target.value)}/><Field label="Password" type="password" autoComplete={signup?'new-password':'current-password'} minLength={8} required value={password} onChange={e=>setPassword(e.target.value)} hint="Minimal 8 karakter."/>
-      {signup&&<><CheckBox checked={agree} onChange={setAgree} label="Saya menyetujui Ketentuan Layanan dan Kebijakan Privasi COVE."/><p className="footnote">Baca <Link href="/ketentuan" className="text-link">ketentuan</Link> dan <Link href="/privasi" className="text-link">privasi</Link>. Persetujuan marketing tidak wajib.</p></>}{error&&<Notice tone="danger">{error}</Notice>}<Btn type="submit" disabled={busy}>{busy?'Memproses…':(signup?'Daftar Akun Perusahaan':'Masuk ke COVE')} <ArrowRight size={16}/></Btn></form>
-    <div className="access-links"><Link href={(signup?'/login':'/signup')+suffix}>{signup?'Sudah punya akun? Masuk':'Belum punya akun? Daftar'}</Link>{!signup&&<Link href={'/forgot-password'+intentQuery(plan)}>Lupa password?</Link>}<Link href="/invitation">Saya menerima undangan tim</Link></div>
+  return <AccessLayout title={signup?'Buat akun COVE':'Masuk ke COVE'} description={signup?'Mulai dengan nama, email, dan kata sandi Anda.':'Gunakan email dan kata sandi akun COVE Anda.'}>
+    <nav className="button-row" aria-label="Akses akun"><Link className={'btn'+(signup?' btn-outline':'')} aria-current={!signup?'page':undefined} href={'/login'+suffix}>Masuk</Link><Link className={'btn'+(signup?'':' btn-outline')} aria-current={signup?'page':undefined} href={'/signup'+suffix}>Buat akun</Link></nav>
+    {signup&&plan&&<p className="footnote">Paket pilihan: {PLANS[plan].name}. Data perusahaan diisi setelah akun siap.</p>}
+    {!s.journey.signedIn&&!s.isLoading&&s.notice&&<Notice>{s.notice} <button type="button" className="text-link" disabled={busy} onClick={resumeAccount}>Coba muat akun lagi</button></Notice>}
+    <form className="stack" onSubmit={submit} aria-busy={busy}>
+      {signup&&<Field label="Nama lengkap" autoComplete="name" required disabled={busy} value={name} onChange={e=>setName(e.target.value)}/>}
+      <Field label="Email" type="email" autoComplete="email" required disabled={busy} value={email} onChange={e=>{setEmail(e.target.value);rememberAuthEmail(e.target.value);}}/>
+      <Field label="Kata sandi" type={showPassword?'text':'password'} autoComplete={signup?'new-password':'current-password'} minLength={signup?8:undefined} required disabled={busy} value={password} onChange={e=>setPassword(e.target.value)} hint={signup?'Minimal 8 karakter.':undefined}/>
+      <CheckBox checked={showPassword} onChange={setShowPassword} label="Tampilkan kata sandi"/>
+      {!signup&&<Link className="text-link" href={'/forgot-password'+suffix}>Lupa kata sandi?</Link>}
+      {signup&&<><CheckBox checked={agree} onChange={setAgree} disabled={busy} label="Saya menyetujui Ketentuan Layanan dan Kebijakan Privasi COVE."/><p className="footnote">Baca <Link href="/ketentuan" className="text-link">ketentuan</Link> dan <Link href="/privasi" className="text-link">privasi</Link>.</p></>}
+      {error&&<Notice tone="danger">{error}</Notice>}
+      {unconfirmed&&<Link className="text-link" href={'/verify-email'+suffix}>Buka verifikasi email</Link>}
+      {retryAccount&&<Btn type="button" secondary disabled={busy} onClick={resumeAccount}>Coba muat akun lagi</Btn>}
+      <Btn type="submit" disabled={busy}>{busy?'Memproses…':(signup?'Buat akun':'Masuk')} <ArrowRight size={16}/></Btn>
+    </form>
+    <div className="access-links"><Link href={(signup?'/login':'/signup')+suffix}>{signup?'Sudah punya akun? Masuk':'Belum punya akun? Buat akun'}</Link><Link href="/invitation">Saya menerima undangan tim</Link></div>
   </AccessLayout>;
 }
 export function VerifyEmailPage(){
   const s = useStore();
-  const {query} = useRoute();
+  const {query,go} = useRoute();
   const plan = parsePlan(query.get('plan')) ?? s.journey.intent;
+  const returnTo=safePath(query.get('returnTo'),'');const suffix=authQuery(plan,returnTo);
+  const [email,setEmail]=useState(pendingAuthEmail);
   const [notice, setNotice] = useState('');
-
-  return (
-    <AccessLayout title="Verifikasi alamat email" description="Tautan verifikasi aman telah dikirimkan ke email pendaftaran Anda.">
-      <Notice tone="info">
-        Silakan periksa kotak masuk atau spam email Anda dan klik tautan konfirmasi untuk mengaktifkan akun. Sesi akun akan terbentuk secara sah setelah email terverifikasi.
-      </Notice>
-      {notice && <Notice>{notice}</Notice>}
-      <div className="button-row">
-        <Btn secondary onClick={() => setNotice('Instruksi verifikasi ulang telah dikirimkan ke email Anda.')}>
-          Kirim ulang tautan verifikasi
-        </Btn>
-        <Link className="btn" href={'/login' + intentQuery(plan)}>
-          Masuk ke Akun Terverifikasi <ArrowRight size={16}/>
-        </Link>
-      </div>
-      <Link className="text-link" href="/bantuan">Kendala saat verifikasi? Hubungi bantuan</Link>
-    </AccessLayout>
-  );
+  const [error,setError]=useState(()=>new URLSearchParams(window.location.hash.slice(1)).has('error')?'Tautan verifikasi sudah tidak berlaku. Kirim ulang tautan di bawah.':'');
+  const [busy,setBusy]=useState(false);const [cooldown,setCooldown]=useState(0);
+  useEffect(() => {
+    if (cooldown<=0)return;
+    const timer=setTimeout(()=>setCooldown(value=>value-1),1000);
+    return ()=>clearTimeout(timer);
+  },[cooldown]);
+  useEffect(() => {
+    if (!busy && !error && s.authStatus==='authenticated' && s.actor && s.journey.signedIn) {
+      rememberAuthEmail('');
+      go(afterAccess(s.journey,plan,returnTo));
+    }
+  },[busy,error,s.authStatus,s.actor,s.journey,plan,returnTo,go]);
+  async function resend(e:FormEvent) {
+    e.preventDefault();if(busy||cooldown>0||!email.trim())return;
+    setBusy(true);setError('');setNotice('');rememberAuthEmail(email);
+    try {
+      const {error:sendError}=await supabase.auth.resend({type:'signup',email:email.trim(),options:{emailRedirectTo:window.location.origin+'/verify-email'+suffix}});
+      if(sendError)throw sendError;
+      setNotice('Permintaan terkirim. Jika email memerlukan verifikasi, tautan akan masuk ke alamat tersebut. Periksa juga folder spam.');
+      setCooldown(60);
+    } catch(err) {
+      if((err as {status?:number})?.status===429)setCooldown(60);
+      setError(authErrorMessage(err));
+    }
+    finally {setBusy(false);}
+  }
+  async function continueAfterVerification() {
+    if(busy)return;setBusy(true);setError('');setNotice('');
+    try {
+      const {data,error:sessionError}=await supabase.auth.getSession();
+      if(sessionError)throw sessionError;
+      if(!data.session){setNotice('Setelah mengeklik tautan email, masuk dengan email dan kata sandi Anda jika verifikasi dibuka di perangkat atau browser lain.');return;}
+      const account=await s.reloadData();
+      rememberAuthEmail('');go(afterAccess(account,plan,returnTo));
+    } catch(err) {setError(authErrorMessage(err));}
+    finally {setBusy(false);}
+  }
+  return <AccessLayout title="Periksa email Anda" description="Buka email dari COVE, lalu klik tautan verifikasi. Setelah itu, Anda bisa melanjutkan di sini.">
+    {!s.journey.signedIn&&!s.isLoading&&s.notice&&<Notice tone="warning">{s.notice} Pilih Lanjutkan untuk mencoba memuat akun lagi.</Notice>}
+    <form className="stack" onSubmit={resend} aria-busy={busy}>
+      <Field label="Email pendaftaran" type="email" autoComplete="email" required disabled={busy} value={email} onChange={e=>{setEmail(e.target.value);rememberAuthEmail(e.target.value);}} hint="Belum menerima email? Periksa folder spam dan pastikan alamat ini benar."/>
+      {error&&<Notice tone="danger">{error}</Notice>}{notice&&<Notice>{notice}</Notice>}
+      <Btn type="button" disabled={busy} onClick={continueAfterVerification}>{busy?'Memproses…':'Saya sudah verifikasi — lanjutkan'} <ArrowRight size={16}/></Btn>
+      <Btn type="submit" secondary disabled={busy||cooldown>0}>{cooldown>0?'Kirim ulang dalam '+cooldown+' detik':'Kirim ulang email verifikasi'}</Btn>
+    </form>
+    <div className="access-links"><Link href={'/login'+suffix}>Sudah verifikasi di browser lain? Masuk</Link><Link href={'/signup'+suffix}>Kembali ke pendaftaran</Link><Link href="/bantuan">Bantuan akun</Link></div>
+  </AccessLayout>;
 }
 
 export function ForgotPasswordPage(){
-  const [email,setEmail]=useState('');
+  const {query}=useRoute();const suffix=authQuery(parsePlan(query.get('plan')),query.get('returnTo'));
+  const [email,setEmail]=useState(pendingAuthEmail);
   const [notice,setNotice]=useState('');
+  const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
   async function submitForgot(e:FormEvent){
     e.preventDefault();
-    if(!email.trim()) return;
-    setBusy(true);
+    if(busy||!email.trim()) return;
+    setBusy(true);setError('');setNotice('');rememberAuthEmail(email);
     try {
-      await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: window.location.origin + '/reset-password'
+      const {error:sendError}=await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: window.location.origin + '/reset-password'+suffix
       });
+      if(sendError)throw sendError;
       setNotice('Jika akun terdaftar, tautan pemulihan telah dikirim ke email tersebut.');
-    } catch(err: any) {
-      setNotice(err.message || 'Permintaan pemulihan diproses.');
+    } catch(err) {
+      setError(authErrorMessage(err));
     } finally {
       setBusy(false);
     }
   }
   return <AccessLayout title="Pulihkan akses akun" description="Gunakan alamat email yang terhubung ke akun COVE.">
     <form className="stack" onSubmit={submitForgot}>
-      <Field label="Email kerja" type="email" required value={email} onChange={e=>setEmail(e.target.value)}/>
+      <Field label="Email" type="email" autoComplete="email" required disabled={busy} value={email} onChange={e=>setEmail(e.target.value)}/>
+      {error&&<Notice tone="danger">{error}</Notice>}
       {notice&&<Notice>{notice}</Notice>}
       <Btn type="submit" disabled={busy}>{busy?'Mengirim…':'Minta tautan pemulihan'}</Btn>
     </form>
-    <Link className="text-link" href="/login">Kembali ke masuk</Link>
+    <Link className="text-link" href={'/login'+suffix}>Kembali ke masuk</Link>
   </AccessLayout>;
 }
 
 export function ResetPasswordPage(){
+  const {query}=useRoute();const suffix=authQuery(parsePlan(query.get('plan')),query.get('returnTo'));
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -138,13 +210,16 @@ export function ResetPasswordPage(){
   const [hasSession, setHasSession] = useState<boolean | null>(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setHasSession(!!session);
-    });
+    let cancelled=false;
+    supabase.auth.getSession().then(({ data: { session },error:sessionError }) => {
+      if(!cancelled)setHasSession(!sessionError&&!!session);
+    }).catch(()=>{if(!cancelled)setHasSession(false);});
+    return ()=>{cancelled=true;};
   }, []);
 
   async function submitReset(e: FormEvent) {
     e.preventDefault();
+    if(busy||!hasSession)return;
     if (password.length < 8) {
       setError('Kata sandi minimal 8 karakter.');
       return;
@@ -158,9 +233,10 @@ export function ResetPasswordPage(){
     try {
       const { error: updateError } = await supabase.auth.updateUser({ password });
       if (updateError) throw updateError;
+      setPassword('');setConfirmPassword('');
       setSuccess(true);
-    } catch (err: any) {
-      setError(err.message || 'Gagal memperbarui kata sandi. Sesi pemulihan mungkin telah kedaluwarsa.');
+    } catch (err) {
+      setError(authErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -168,18 +244,19 @@ export function ResetPasswordPage(){
 
   if (success) {
     return (
-      <AccessLayout title="Kata sandi berhasil diperbarui" description="Kredensial akun Anda telah diperbarui secara aman.">
-        <Notice tone="info">Kata sandi baru Anda telah aktif. Silakan masuk kembali dengan kredensial baru.</Notice>
-        <Link className="btn" href="/login">Masuk ke COVE <ArrowRight size={16}/></Link>
+      <AccessLayout title="Kata sandi berhasil diperbarui" description="Kata sandi baru Anda sudah tersimpan.">
+        <Link className="btn" href={'/login'+suffix}>Lanjutkan ke COVE <ArrowRight size={16}/></Link>
       </AccessLayout>
     );
   }
+
+  if (hasSession === null) return <AccessLayout title="Memeriksa tautan pemulihan" description="Tunggu sebentar, kami sedang memeriksa sesi Anda."><Notice>Memeriksa tautan…</Notice></AccessLayout>;
 
   if (hasSession === false) {
     return (
       <AccessLayout title="Sesi pemulihan tidak valid" description="Tautan pemulihan kata sandi mungkin telah kedaluwarsa atau tidak valid.">
         <Notice tone="warning">Tidak ada sesi pemulihan aktif. Silakan minta tautan pemulihan kata sandi baru.</Notice>
-        <Link className="btn" href="/forgot-password">Minta Tautan Pemulihan <ArrowRight size={16}/></Link>
+        <Link className="btn" href={'/forgot-password'+suffix}>Minta Tautan Pemulihan <ArrowRight size={16}/></Link>
       </AccessLayout>
     );
   }
@@ -192,7 +269,7 @@ export function ResetPasswordPage(){
         {error && <Notice tone="danger">{error}</Notice>}
         <Btn type="submit" disabled={busy}>{busy ? 'Menyimpan…' : 'Perbarui Kata Sandi'} <ArrowRight size={16}/></Btn>
       </form>
-      <Link className="text-link" href="/forgot-password">Minta tautan pemulihan baru</Link>
+      <Link className="text-link" href={'/forgot-password'+suffix}>Minta tautan pemulihan baru</Link>
     </AccessLayout>
   );
 }
