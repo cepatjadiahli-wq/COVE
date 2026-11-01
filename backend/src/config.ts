@@ -21,6 +21,7 @@ export const config = {
   
   // Frontend Origin CORS
   frontendOrigin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173',
+  frontendAllowedOrigins: (process.env.FRONTEND_ALLOWED_ORIGINS || '').split(',').map(origin => origin.trim()).filter(Boolean),
   asOfDate: '2026-09-08'
 };
 

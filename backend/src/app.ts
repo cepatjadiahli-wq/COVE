@@ -19,7 +19,7 @@ const app = new Hono();
 
 // CORS Middleware
 app.use('*', cors({
-  origin: [config.frontendOrigin, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: (origin) => [config.frontendOrigin, ...config.frontendAllowedOrigins, 'http://localhost:5173', 'http://127.0.0.1:5173'].includes(origin) ? origin : null,
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'x-organization-id', 'x-callback-token']
 }));
