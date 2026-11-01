@@ -121,11 +121,14 @@ billingRoute.post('/billing/checkout', async (c) => {
     planId,
     customerName: actor.fullName,
     customerEmail: actor.email,
+    customerPhone: actor.phone || undefined,
     organizationId: actor.orgId
   });
 
   if (!checkoutRes.success) {
-    const httpStatus = checkoutRes.error === 'PAYMENT_PROVIDER_NOT_CONFIGURED' ? 503 : 400;
+    const httpStatus =
+      checkoutRes.error === 'PAYMENT_PROVIDER_NOT_CONFIGURED' ? 503 :
+      checkoutRes.error === 'MOBILE_REQUIRED' || checkoutRes.error === 'MOBILE_INVALID' ? 422 : 400;
     return c.json({
       success: false,
       error: checkoutRes.error,
@@ -142,7 +145,8 @@ billingRoute.post('/billing/checkout', async (c) => {
       organizationId: actor.orgId,
       provider: 'MAYAR',
       providerReference: checkoutRes.data.checkoutRef,
-      providerCheckoutId: checkoutRes.data.checkoutRef,
+      // P0-C6 Section 3: store Mayar transactionId as secondary reference
+      providerCheckoutId: checkoutRes.data.transactionId || checkoutRes.data.checkoutRef,
       status: 'PENDING',
       plan: planId,
       amount: checkoutRes.data.total,

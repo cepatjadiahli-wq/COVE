@@ -359,14 +359,18 @@ test('P0C4-CHECKOUT-09: MayarService calculates exact pricing without generic fa
   const origFetch = globalThis.fetch;
   const capturedPayloads: any[] = [];
   globalThis.fetch = async (url: any, init: any) => {
-    if (url.toString().includes('mayar.id/hl/v1/payment/create')) {
+    // P0-C6: handle both sandbox (mayar.io) and production (mayar.id) URLs
+    if (url.toString().includes('mayar') && url.toString().includes('/hl/v2/payments/create')) {
       const parsedBody = JSON.parse(init.body);
       capturedPayloads.push(parsedBody);
       return {
         ok: true,
         json: async () => ({
-          id: 'chk_provider_' + Date.now(),
-          link: 'https://pay.mayar.id/test'
+          data: {
+            id: 'chk_provider_' + Date.now(),
+            transactionId: 'txn_provider_' + Date.now(),
+            link: 'https://pay.mayar.id/test'
+          }
         })
       } as any;
     }
@@ -378,7 +382,8 @@ test('P0C4-CHECKOUT-09: MayarService calculates exact pricing without generic fa
     const pilotRes = await MayarService.createCheckoutSession({
       planId: 'pilot',
       customerName: 'Pilot User',
-      customerEmail: 'pilot@cove.id'
+      customerEmail: 'pilot@cove.id',
+      customerPhone: '+628111111111'   // P0-C6: required
     });
     assert.strictEqual(pilotRes.success, true);
     assert.strictEqual(pilotRes.data?.subtotal, 7500000);
@@ -389,7 +394,8 @@ test('P0C4-CHECKOUT-09: MayarService calculates exact pricing without generic fa
     const coreRes = await MayarService.createCheckoutSession({
       planId: 'core',
       customerName: 'Core User',
-      customerEmail: 'core@cove.id'
+      customerEmail: 'core@cove.id',
+      customerPhone: '+628222222222'   // P0-C6: required
     });
     assert.strictEqual(coreRes.success, true);
     assert.strictEqual(coreRes.data?.subtotal, 4900000);
@@ -400,22 +406,28 @@ test('P0C4-CHECKOUT-09: MayarService calculates exact pricing without generic fa
     const scaleRes = await MayarService.createCheckoutSession({
       planId: 'scale',
       customerName: 'Scale User',
-      customerEmail: 'scale@cove.id'
+      customerEmail: 'scale@cove.id',
+      customerPhone: '+628333333333'   // P0-C6: required
     });
     assert.strictEqual(scaleRes.success, true);
     assert.strictEqual(scaleRes.data?.subtotal, 9900000);
     assert.strictEqual(scaleRes.data?.tax, 1089000);
     assert.strictEqual(scaleRes.data?.total, 10989000);
 
-    // Verify captured provider payloads received exact amounts
+    // Verify captured provider payloads received exact amounts and mobile field
     assert.strictEqual(capturedPayloads[0].amount, 8325000);
     assert.strictEqual(capturedPayloads[1].amount, 5439000);
     assert.strictEqual(capturedPayloads[2].amount, 10989000);
+    // P0-C6: verify mobile, redirectUrl, expiredAt are forwarded
+    assert.ok(capturedPayloads[0].mobile, 'mobile must be forwarded to Mayar');
+    assert.ok(capturedPayloads[0].redirectUrl, 'redirectUrl must be forwarded');
+    assert.ok(capturedPayloads[0].expiredAt, 'expiredAt must be forwarded');
   } finally {
     globalThis.fetch = origFetch;
     config.mayarApiKey = origKey;
   }
 });
+
 
 // ----------------------------------------------------------------------------
 // TEST 10: Non-admin / non-owner cannot checkout regardless of plan

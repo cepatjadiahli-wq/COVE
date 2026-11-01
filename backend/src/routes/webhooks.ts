@@ -9,6 +9,7 @@ import {Hono} from 'hono';
 import crypto from 'node:crypto';
 import {MayarService} from '../services/mayar.service.js';
 import {config} from '../config.js';
+import {getMayarEventId} from '../utils/mayar-webhook.js';
 
 export const webhooksRoute = new Hono();
 
@@ -75,7 +76,7 @@ webhooksRoute.post('/webhooks/mayar', async (c) => {
     }, 400);
   }
 
-  if (typeof body.id !== 'string' || !body.id.trim()) {
+  if (!getMayarEventId(body)) {
     return c.json({
       success: false,
       error: 'Payload webhook tidak valid: field id harus berupa string non-kosong.'

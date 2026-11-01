@@ -3,7 +3,7 @@
 // Integrates with Supabase Auth, eliminates privilege escalation switch-role.
 // ============================================================================
 
-import {createContext, useContext, useEffect, useState, useCallback, type ReactNode} from 'react';
+import {createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode} from 'react';
 import type {
   Project,
   Action,
@@ -13,7 +13,7 @@ import type {
   Feature,
   RecoveryLead
 } from './domain';
-import { INITIAL_JOURNEY, type Journey } from './journey';
+import { INITIAL_JOURNEY, parsePlan, type Journey } from './journey';
 import { readConsent, saveConsent } from './privacy';
 import { api, setActiveOrganizationId } from './api';
 import { supabase } from './supabase';
@@ -67,86 +67,26 @@ function useWorkspaceStore() {
   const [readNotifications, setReadNotifications] = useState(false);
   const [onboarding, setOnboarding] = useState({ company: '', name: '', project: '', contract: '', customer: '', step: 0 });
   const [isLoading, setIsLoading] = useState(false);
+  const journeyRef = useRef(journey);
+  useEffect(() => { journeyRef.current = journey; }, [journey]);
+  const sessionVersion = useRef(0);
+  const sessionUserId = useRef<string | null>(null);
+  const tenantIdRef = useRef(selectedTenantId);
+  const reloadRequest = useRef<Promise<Journey> | null>(null);
 
   useEffect(() => saveConsent(consents), [consents]);
-
-  // Fetch initial data from backend on mount / auth change
-  const reloadData = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      const [meRes, projRes, actRes, invRes, tktRes, featRes, billRes] = await Promise.allSettled([
-        api.getMe(),
-        api.getProjects(),
-        api.getActions(),
-        api.getInvoices(),
-        api.getTickets(),
-        api.getFeatures(),
-        api.getBilling()
-      ]);
-
-      if (meRes.status === 'fulfilled' && meRes.value?.user) {
-        const user = meRes.value.user;
-        setActor(meRes.value.actor || null);
-        setUserName(user.name || '');
-        setUserEmail(user.email || '');
-        setRoleState(user.role || null);
-        setCompany(user.company || '');
-        setTenantSelectionRequired(Boolean(meRes.value.tenantSelectionRequired));
-        if (Array.isArray(meRes.value.tenantOptions)) {
-          setTenantOptions(meRes.value.tenantOptions);
-        }
-        if (user.orgId) {
-          setSelectedTenantId(user.orgId);
-          setActiveOrganizationId(user.orgId);
-        }
-        setAuthStatus('authenticated');
-        setJourney(j => ({
-          ...j,
-          signedIn: true,
-          companyComplete: !!user.company,
-          status: billRes.status === 'fulfilled' && billRes.value?.subscription?.status === 'ACTIVE' ? 'active' : j.status
-        }));
-      } else if (meRes.status === 'rejected') {
-        // If 401/403 and no actor
-        setAuthStatus('unauthenticated');
-        setActor(null);
-        setRoleState(null);
-        setCompany('');
-        setTenantOptions([]);
-        setTenantSelectionRequired(false);
-      }
-
-      if (projRes.status === 'fulfilled' && Array.isArray(projRes.value)) {
-        setProjects(projRes.value);
-      }
-      if (actRes.status === 'fulfilled' && Array.isArray(actRes.value)) {
-        setActions(actRes.value);
-      }
-      if (invRes.status === 'fulfilled' && Array.isArray(invRes.value)) {
-        setInvoices(invRes.value);
-      }
-      if (tktRes.status === 'fulfilled' && Array.isArray(tktRes.value)) {
-        setTickets(tktRes.value);
-      }
-      if (featRes.status === 'fulfilled' && Array.isArray(featRes.value)) {
-        setFeatures(featRes.value);
-      }
-      if (billRes.status === 'fulfilled' && billRes.value?.subscription) {
-        setSubscription(billRes.value.subscription.status === 'ACTIVE' ? 'Aktif' : 'Non-Aktif');
-      }
-    } catch (err) {
-      console.warn('Backend sync error:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
 
   /**
    * Clears all tenant-scoped session state. Called on logout and SIGNED_OUT auth event.
    * Prevents stale tenant context leaking across accounts.
    */
   const clearTenantSessionState = useCallback(() => {
+    sessionVersion.current += 1;
+    reloadRequest.current = null;
+    tenantIdRef.current = null;
     setActor(null);
+    setUserName('');
+    setUserEmail('');
     setRoleState(null);
     setCompany('');
     setSelectedTenantId(null);
@@ -159,56 +99,142 @@ function useWorkspaceStore() {
     setTickets([]);
     setFeatures([]);
     setDocuments([]);
+    setRecoveryLeads([]);
+    setDrafts([]);
+    setOnboarding({ company: '', name: '', project: '', contract: '', customer: '', step: 0 });
     setSubscription('Non-Aktif');
+    setIsLoading(false);
+    journeyRef.current = { ...INITIAL_JOURNEY };
     setJourney({ ...INITIAL_JOURNEY });
   }, []);
 
+  // Resolve identity first. Only billing and projects are needed for the next screen.
+  const reloadData = useCallback((): Promise<Journey> => {
+    if (reloadRequest.current) return reloadRequest.current;
+    const version = sessionVersion.current;
+    const isCurrent = () => version === sessionVersion.current;
+    const request = (async () => {
+      setIsLoading(true);
+      let identityVerified = false;
+      try {
+        const me = await api.getMe();
+        if (!isCurrent()) throw new Error('Sesi telah berubah. Silakan coba lagi.');
+        if (!me?.user || !me.actor) throw new Error('Identitas akun belum dapat dimuat.');
+        identityVerified = true;
+        const user = me.user;
+        const orgId = user.orgId || null;
+        const needsTenant = Boolean(me.tenantSelectionRequired);
+        if (tenantIdRef.current !== orgId) {
+          setProjects([]); setActions([]); setInvoices([]); setTickets([]); setFeatures([]); setDocuments([]);
+        }
+        tenantIdRef.current = orgId;
+        setSelectedTenantId(orgId);
+        setActiveOrganizationId(orgId);
+        setActor(me.actor);
+        setUserName(user.name || '');
+        setUserEmail(user.email || '');
+        setRoleState(user.role || null);
+        setCompany(user.company || '');
+        setTenantSelectionRequired(needsTenant);
+        setTenantOptions(Array.isArray(me.tenantOptions) ? me.tenantOptions : []);
+        setAuthStatus('authenticated');
+
+        let freshProjects: Project[] = [];
+        let billing: {status?: string; subscription?: {status?: string; planId?: string} | null} | null = null;
+        if (orgId && !needsTenant) {
+          billing = await api.getBilling();
+          if (!isCurrent()) throw new Error('Sesi telah berubah. Silakan coba lagi.');
+          if ((billing?.status || billing?.subscription?.status) === 'ACTIVE') freshProjects = await api.getProjects();
+          if (!isCurrent()) throw new Error('Sesi telah berubah. Silakan coba lagi.');
+        }
+        const billingStatus = String(billing?.status || billing?.subscription?.status || 'NONE').toLowerCase();
+        const status: Journey['status'] = ['active', 'pending', 'verifying', 'failed', 'expired'].includes(billingStatus)
+          ? billingStatus as Journey['status'] : 'none';
+        const account: Journey = {
+          ...INITIAL_JOURNEY,
+          intent: journeyRef.current.intent,
+          signedIn: true,
+          companyComplete: Boolean(orgId && user.company),
+          status,
+          activePlan: parsePlan(billing?.subscription?.planId || null),
+          firstProject: freshProjects.length > 0,
+          platformAdmin: Boolean(me.actor.isPlatformAdmin),
+          tenantSelectionRequired: needsTenant
+        };
+        setProjects(freshProjects);
+        setSubscription(status === 'active' ? 'Aktif' : 'Non-Aktif');
+        journeyRef.current = account;
+        setJourney(account);
+
+        if (orgId && !needsTenant) {
+          // Auxiliary collections must not delay sign-in or cross a logout/tenant change.
+          void Promise.allSettled([api.getActions(), api.getInvoices(), api.getTickets(), api.getFeatures()])
+            .then(([actionsResult, invoicesResult, ticketsResult, featuresResult]) => {
+              if (!isCurrent() || tenantIdRef.current !== orgId) return;
+              if (actionsResult.status === 'fulfilled' && Array.isArray(actionsResult.value)) setActions(actionsResult.value);
+              if (invoicesResult.status === 'fulfilled' && Array.isArray(invoicesResult.value)) setInvoices(invoicesResult.value);
+              if (ticketsResult.status === 'fulfilled' && Array.isArray(ticketsResult.value)) setTickets(ticketsResult.value);
+              if (featuresResult.status === 'fulfilled' && Array.isArray(featuresResult.value)) setFeatures(featuresResult.value);
+            });
+        }
+        return account;
+      } catch (cause) {
+        if (isCurrent()) {
+          if (!identityVerified && (cause as {status?: number})?.status === 401) {
+            clearTenantSessionState();
+            setAuthStatus('unauthenticated');
+          }
+          setNotice('Akun belum dapat dimuat. Silakan coba lagi.');
+        }
+        throw Object.assign(new Error('Akun belum dapat dimuat. Silakan coba lagi.', {cause}), {code: 'APP_SESSION_LOAD_FAILED'});
+      } finally {
+        if (isCurrent()) setIsLoading(false);
+      }
+    })();
+    reloadRequest.current = request;
+    void request.finally(() => {
+      if (reloadRequest.current === request) reloadRequest.current = null;
+    }).catch(() => {});
+    return request;
+  }, [clearTenantSessionState]);
+
   // Listen to Supabase Auth lifecycle
   useEffect(() => {
+    let disposed = false;
+    let authChanged = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleReload = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (!disposed) void reloadData().catch(() => {}); }, 0);
+    };
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (disposed || authChanged) return;
+      sessionUserId.current = session?.user.id || null;
       if (session?.user) {
-        setAuthStatus('authenticated');
-        reloadData();
+        scheduleReload();
       } else {
-        // Probe backend in case session cookie or test header exists
-        api.getMe()
-          .then(data => {
-            if (data?.user) {
-              setActor(data.actor || null);
-              setUserName(data.user.name || '');
-              setUserEmail(data.user.email || '');
-              setRoleState(data.user.role || null);
-              setCompany(data.user.company || '');
-              setAuthStatus('authenticated');
-              reloadData();
-            } else {
-              setAuthStatus('unauthenticated');
-              setRoleState(null);
-              setActor(null);
-              setCompany('');
-            }
-          })
-          .catch(() => {
-            setAuthStatus('unauthenticated');
-            setRoleState(null);
-            setActor(null);
-            setCompany('');
-          });
+        setAuthStatus('unauthenticated');
+        clearTenantSessionState();
       }
-    });
+    }).catch(() => { if (!disposed && !authChanged) { setAuthStatus('unauthenticated'); clearTenantSessionState(); } });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'INITIAL_SESSION') return;
+      authChanged = true;
       if (session?.user) {
-        setAuthStatus('authenticated');
-        reloadData();
+        if (sessionUserId.current && sessionUserId.current !== session.user.id) clearTenantSessionState();
+        sessionUserId.current = session.user.id;
+        scheduleReload();
       } else {
         // SIGNED_OUT or session expired — clear ALL tenant state to prevent cross-account leakage
+        clearTimeout(timer);
+        sessionUserId.current = null;
         setAuthStatus('unauthenticated');
         clearTenantSessionState();
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => { disposed = true; clearTimeout(timer); subscription.unsubscribe(); };
   }, [reloadData, clearTenantSessionState]);
 
   // Mutations
@@ -270,9 +296,9 @@ function useWorkspaceStore() {
   };
 
   const logout = async () => {
-    await supabase.auth.signOut();
     setAuthStatus('unauthenticated');
     clearTenantSessionState();
+    await supabase.auth.signOut();
   };
 
   const createTicket = async (data: { title: string; body: string; category?: string; priority?: string }) => {
@@ -318,6 +344,8 @@ function useWorkspaceStore() {
   };
 
   const selectTenant = async (orgId: string) => {
+    clearTenantSessionState();
+    tenantIdRef.current = orgId;
     setActiveOrganizationId(orgId);
     setSelectedTenantId(orgId);
     setTenantSelectionRequired(false);

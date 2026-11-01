@@ -155,6 +155,7 @@ export async function requireAuth(c: Context, next: Next) {
     role: selectedMembership ? selectedMembership.role : null,
     fullName: profile.fullName,
     email: verification.user.email,
+    phone: profile.phone || null,
     isPlatformAdmin,
     platformGrants
   };

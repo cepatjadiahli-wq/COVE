@@ -13,6 +13,7 @@ export type Journey = {
   enabled: boolean; signedIn: boolean; companyComplete: boolean;
   status: 'none' | 'pending' | 'verifying' | 'active' | 'failed' | 'expired';
   activePlan: PlanId | null; intent: PlanId | null; invited: boolean; firstProject: boolean;
+  platformAdmin?: boolean; tenantSelectionRequired?: boolean;
 };
 export const INITIAL_JOURNEY: Journey = { enabled: true, signedIn: false, companyComplete: false, status: 'none', activePlan: null, intent: null, invited: false, firstProject: false };
 export function safePath(value?: string | null, fallback = '/dashboard') {
@@ -23,16 +24,18 @@ export function intentQuery(plan: PlanId | null) { return plan ? '?plan=' + plan
 export function afterAccess(account: Journey, plan: PlanId | null, returnTo?: string | null): string {
   if (account.invited) return '/invitation';
   if (!account.signedIn) return '/signup' + intentQuery(plan);
+  if (account.tenantSelectionRequired) return '/dashboard';
+  if (account.platformAdmin && !account.companyComplete) return '/admin';
   if (!account.companyComplete) return '/onboarding' + intentQuery(plan);
   if (account.status === 'active') {
+    if (returnTo && safePath(returnTo, '') && account.firstProject) return safePath(returnTo);
     if (plan && plan !== account.activePlan) return '/billing?change=' + plan;
-    if (plan && plan === account.activePlan) return '/billing';
     if (!account.firstProject) return '/onboarding/project';
     return safePath(returnTo, '/dashboard');
   }
   if (account.status === 'pending' || account.status === 'verifying') return '/billing/status';
   return plan ? '/checkout' + intentQuery(plan) : '/pricing';
 }
-export function canSetupProject(account: Journey) { return account.enabled && account.signedIn && account.companyComplete && account.status === 'active' && !account.invited; }
-export function canReviewCheckout(account: Journey) { return account.enabled && account.signedIn && account.companyComplete && !account.invited && !['active', 'pending', 'verifying'].includes(account.status); }
+export function canSetupProject(account: Journey) { return account.enabled && account.signedIn && account.companyComplete && account.status === 'active' && !account.invited && !account.tenantSelectionRequired; }
+export function canReviewCheckout(account: Journey) { return account.enabled && account.signedIn && account.companyComplete && !account.invited && !account.tenantSelectionRequired && !['active', 'pending', 'verifying'].includes(account.status); }
 export function projectLimit(plan: PlanId | null) { return plan ? PLANS[plan].projects : null; }

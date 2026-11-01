@@ -25,6 +25,7 @@ export interface IIdentityRepository {
   /** Finds profile regardless of status — used to detect SUSPENDED accounts */
   findProfileByAuthUserIdAny(authUserId: string): Promise<ProfileEntity | null>;
   ensureProfileForAuthUser(authUserId: string, email: string, fullName?: string): Promise<ProfileEntity>;
+  updateProfile(profileId: string, data: { fullName?: string; phone?: string }): Promise<ProfileEntity>;
   getActiveMembershipsByProfileId(profileId: string): Promise<MembershipWithOrganization[]>;
   getOrganizationById(orgId: string): Promise<OrganizationEntity | null>;
   updateOrganization(orgId: string, data: { legalName?: string; displayName?: string }): Promise<OrganizationEntity>;
@@ -210,6 +211,35 @@ export class PostgresIdentityRepository implements IIdentityRepository {
 
     // Row existed (conflict, no insert) — fetch whatever is there
     return this.findProfileByAuthUserIdAny(authUserId) as Promise<ProfileEntity>;
+  }
+
+  public async updateProfile(profileId: string, data: { fullName?: string; phone?: string }): Promise<ProfileEntity> {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (data.fullName !== undefined) {
+      fields.push(`full_name = $${idx++}`);
+      values.push(data.fullName.trim());
+    }
+    if (data.phone !== undefined) {
+      fields.push(`phone = $${idx++}`);
+      values.push(data.phone.trim() || null);
+    }
+    fields.push(`updated_at = NOW()`);
+    values.push(profileId);
+
+    const query = `
+      UPDATE public.profiles
+      SET ${fields.join(', ')}
+      WHERE id = $${idx}
+      RETURNING id, auth_user_id AS "authUserId", full_name AS "fullName", phone, status, created_at AS "createdAt"
+    `;
+    const res = await pgPool.query(query, values);
+    if (!res.rows[0]) {
+      throw new Error('Profil pengguna tidak ditemukan.');
+    }
+    return res.rows[0];
   }
 
   public async updateOrganization(orgId: string, data: { legalName?: string; displayName?: string }): Promise<OrganizationEntity> {
@@ -405,6 +435,14 @@ export class InMemoryIdentityRepository implements IIdentityRepository {
   public async findProfileByAuthUserIdAny(authUserId: string): Promise<ProfileEntity | null> {
     const p = this.profiles.find(x => x.authUserId === authUserId);
     return p ? {...p} : null;
+  }
+
+  public async updateProfile(profileId: string, data: { fullName?: string; phone?: string }): Promise<ProfileEntity> {
+    const p = this.profiles.find(x => x.id === profileId);
+    if (!p) throw new Error('Profil pengguna tidak ditemukan.');
+    if (data.fullName !== undefined) p.fullName = data.fullName.trim();
+    if (data.phone !== undefined) p.phone = data.phone.trim() || undefined;
+    return {...p};
   }
 
   public async getActiveMembershipsByProfileId(profileId: string): Promise<MembershipWithOrganization[]> {

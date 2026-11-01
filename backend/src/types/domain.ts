@@ -30,6 +30,7 @@ export interface RequestActor {
   role: TenantRole | null;
   fullName: string;
   email: string;
+  phone?: string | null;           // from profiles.phone — required for Mayar checkout
   isPlatformAdmin: boolean;
   platformGrants: PlatformRoleScope[];
 }
